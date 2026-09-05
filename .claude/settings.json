@@ -81,7 +81,9 @@
     ],
     "additionalDirectories": [
       "../Ixdar",
-      "../obsidian"
+      "../obsidian",
+      "../autofix",
+      "../ixdar-tickets"
     ]
   }
 }

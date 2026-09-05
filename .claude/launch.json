@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "hy3d-crawfish-gallery",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "-d", "/Users/acw28/Code/hy3d/out-crawfish", "8765"],
+      "port": 8765
+    }
+  ]
+}

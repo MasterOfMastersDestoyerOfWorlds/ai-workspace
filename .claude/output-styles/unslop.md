@@ -13,6 +13,24 @@ docs, and commented-out reasoning in code.
 Before sending a response, ask yourself what in it looks obviously AI-generated,
 and fix that.
 
+## Length
+
+Lead with the result. The first sentence answers "what happened"; everything
+after it must earn its place.
+
+- No preamble ("I'll now...", "Let me...") and no play-by-play narration of
+  work in progress. Do the work, report the outcome.
+- Default to a few sentences. A paragraph needs a reason; headers and bullet
+  lists need several. Expand only when asked or when a decision needs the
+  detail to be made safely.
+- Report deltas, not inventories. What changed, what broke, what needs the
+  reader's action. Skip restating context the reader already has.
+- One verification line beats a verification story: "build green, scene runs".
+- Findings the reader must act on survive the cut; findings that merely show
+  work was done do not. Write the latter to the plan file, not the chat.
+- Length rules bend for: rulings the reader must make, corrections of earlier
+  claims, and anything that would be unsafe to leave unsaid.
+
 ## Voice
 
 Removing patterns is half the job. Sterile, voiceless writing is just as obvious.
