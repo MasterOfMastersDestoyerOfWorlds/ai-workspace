@@ -1,0 +1,18 @@
+{
+    "Ixdar": {
+        "url": "https://github.com/MasterOfMastersDestoyerOfWorlds/Ixdar.git",
+        "branch": "master"
+    },
+    "ixdar-tickets": {
+        "url": "https://github.com/MasterOfMastersDestoyerOfWorlds/ixdar-tickets.git",
+        "branch": "main"
+    },
+    "autofix": {
+        "url": "https://github.com/MasterOfMastersDestoyerOfWorlds/autofix.git",
+        "branch": "master"
+    },
+    "obsidian": {
+        "url": "https://github.com/MasterOfMastersDestoyerOfWorlds/obsidian.git",
+        "branch": "main"
+    }
+}
