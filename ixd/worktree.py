@@ -1,62 +1,42 @@
-#!/usr/bin/env python3
 """Git actions that are safe inside a linked worktree, and nothing else.
 
-The Claude permission deny list blocks `git add`, `git commit`, `git merge` and friends
-everywhere so that agents can never touch the main branch. This script is the one allow-listed
-door. It acts only on a *linked* worktree (never the main checkout) whose HEAD is a branch other
-than the main branch, and it only ever moves that branch.
+This is what the `ixd wt` subcommands are built from. The Claude permission deny list blocks
+`git add`, `git commit`, `git merge` and friends everywhere so agents can never touch the main
+branch, and these functions are the one allow-listed door. They act only on a *linked* worktree,
+never the main checkout, whose HEAD is a branch other than the main branch, and they only ever move
+that branch.
 
-The model: the worktree's uncommitted diff IS the proposed change (the "PR"). The branch pointer
-sits on the main branch so `git diff` in the worktree shows exactly what would land.
+The model: the worktree's uncommitted diff IS the proposed change, the "PR". The branch pointer sits
+on the main branch, so `git diff` in the worktree shows exactly what would land.
 
-    worktree_sync.py new    <ticket> [--repo R] create the worktree and branch off the main branch,
-                                                seed its Python environment, print the agent brief
-    worktree_sync.py status <worktree>          branch, distance from main, changed files, and the
-                                                last note of the agent that worked here (resume brief)
-    worktree_sync.py sync   <worktree>          rebase the proposed change onto the current main
-                                                branch and leave it uncommitted again
-    worktree_sync.py launch add <worktree> --scene ID [--property k=v]
-                                                add the .vscode/launch.json entry for the user's F5,
-                                                editing the file as JSONC so comments survive
-    worktree_sync.py done   <worktree>          sync, build, run the launch entry, check tmp/ holds a
-                                                screenshot, mark the ticket REVIEW; refuses on any
-                                                failed step and never lands
-    worktree_sync.py commit <worktree> -m MSG   one squashed commit of the whole diff on top of
-                                                main (requires a fresh sync: no merge commits,
-                                                no history, one commit the user can fast-forward)
+`sync` never loses work. The change is parked in a temporary commit, replayed onto the main branch
+with `git rebase`, and unpacked back into the working tree. A conflicted replay leaves the rebase in
+progress with the conflicting files listed, for `continue` or `abort`. Nothing here checks out,
+pushes, or writes to the main branch, and tmp/ is never staged or committed.
 
-`sync` never loses work: the change is parked in a temporary commit, replayed onto the main
-branch with `git rebase`, and unpacked back into the working tree. A conflicted replay is
-aborted, the temporary commit is unpacked again, and the conflicting files are listed. It never
-checks out, pushes, or writes to the main branch. tmp/ is never staged or committed.
 Works on Linux, macOS and Windows.
 """
-import argparse
+
 import datetime
 import json
 import os
 import re
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
-try:
-    from tools.paths import repo_home
-except ImportError:  # run as a plain script from the tools directory
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from paths import repo_home  # noqa: E402
+from .paths import repo_home
 
 TMP_EXCLUDE = ":(exclude)tmp"
-PARK_MESSAGE = "worktree_sync: parked working tree (temporary)"
+PARK_MESSAGE = "ixd wt: parked working tree (temporary)"
 CODE_ROOT = repo_home()
 TICKET_REPO = CODE_ROOT / "ixdar-tickets"
 TRANSCRIPT_ROOT = Path.home() / ".claude" / "projects"
-REPO_CHOICES = ("Ixdar", "ixdar-tickets", "ai-workspace")
 WORKTREE_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
-WORKTREE_HELP = "worktree path or bare name (default: the worktree containing the current directory)"
-LAUNCH_VM_ARGS = ("-enableassertions -Dsun.awt.noerasebackground=true "
-                  "-Dorg.lwjgl.util.DebugLoader=true -XX:ErrorFile=target/hs_err_pid%p.log")
+LAUNCH_VM_ARGS = (
+    "-enableassertions -Dsun.awt.noerasebackground=true "
+    "-Dorg.lwjgl.util.DebugLoader=true -XX:ErrorFile=target/hs_err_pid%p.log"
+)
 LAUNCH_MAIN_CLASS = "ixdar.canvas.IxdarWindow"
 SCREENSHOT_SUFFIXES = (".png", ".jpg", ".jpeg")
 MIN_TRANSCRIPT_AGE = 120
@@ -118,7 +98,10 @@ def locate_worktree(name_or_path):
         candidate = root / ".claude" / "worktrees" / name_or_path
         if candidate.is_dir():
             return candidate.resolve()
-    raise SystemExit(f"no worktree named {name_or_path!r} under " + " or ".join(str(r / ".claude/worktrees") for r in roots))
+    raise SystemExit(
+        f"no worktree named {name_or_path!r} under "
+        + " or ".join(str(r / ".claude/worktrees") for r in roots)
+    )
 
 
 def resolve_worktree(path, allow_rebase=False):
@@ -131,12 +114,19 @@ def resolve_worktree(path, allow_rebase=False):
         raise SystemExit(f"{worktree} is not inside a git work tree")
     toplevel = Path(git(worktree, "rev-parse", "--show-toplevel")).resolve()
     if toplevel != worktree:
+        if not (worktree / ".git").exists():
+            raise SystemExit(
+                f"{worktree} is a leftover directory, not a worktree: git no longer knows it, so it "
+                f"was landed or removed and the editor recreated its output. Delete it."
+            )
         raise SystemExit(f"{worktree} is not a worktree root (root is {toplevel})")
     git_dir = Path(git(worktree, "rev-parse", "--absolute-git-dir")).resolve()
     common_dir = Path(git(worktree, "rev-parse", "--git-common-dir"))
     common_dir = (worktree / common_dir).resolve() if not common_dir.is_absolute() else common_dir.resolve()
     if git_dir == common_dir:
-        raise SystemExit(f"{worktree} is the main checkout, refusing; this tool only acts on linked worktrees")
+        raise SystemExit(
+            f"{worktree} is the main checkout, refusing; this tool only acts on linked worktrees"
+        )
     rebasing = (git_dir / "rebase-merge").exists() or (git_dir / "rebase-apply").exists()
     if rebasing:
         if not allow_rebase:
@@ -164,7 +154,7 @@ def main_branch_of(worktree):
     listing = git(worktree, "worktree", "list", "--porcelain")
     for line in listing.splitlines():
         if line.startswith("branch "):
-            return line[len("branch "):].removeprefix("refs/heads/")
+            return line[len("branch ") :].removeprefix("refs/heads/")
         if line == "":
             break
     raise SystemExit("cannot determine the main branch: the main worktree has a detached HEAD")
@@ -184,22 +174,6 @@ def ahead_behind(worktree, branch, main_branch):
     ahead = int(git(worktree, "rev-list", "--count", f"{main_branch}..{branch}"))
     behind = int(git(worktree, "rev-list", "--count", f"{branch}..{main_branch}"))
     return ahead, behind
-
-
-def cmd_status(args):
-    worktree, branch, main_branch = resolve_worktree(args.worktree)
-    ahead, behind = ahead_behind(worktree, branch, main_branch)
-    changed = changed_files(worktree)
-    print(f"worktree: {worktree}")
-    print(f"branch:   {branch} (commits ahead of {main_branch}: {ahead}, behind: {behind})")
-    print(f"changed:  {len(changed)} file(s) uncommitted")
-    for line in changed[:40]:
-        print(f"  {line}")
-    if len(changed) > 40:
-        print(f"  ... {len(changed) - 40} more")
-    if ahead or behind:
-        print("run `sync` to put the whole change on top of the current main branch as an uncommitted diff")
-    print_resume_note(worktree)
 
 
 def print_resume_note(worktree):
@@ -232,10 +206,12 @@ def last_agent_note(worktree, file_limit=200, min_age_seconds=MIN_TRANSCRIPT_AGE
     if not TRANSCRIPT_ROOT.is_dir():
         return None
     now = datetime.datetime.now().timestamp()
-    transcripts = [path for path in TRANSCRIPT_ROOT.rglob("*.jsonl")
-                   if path.is_file() and now - path.stat().st_mtime >= min_age_seconds]
-    transcripts.sort(key=lambda path: (is_subagent_transcript(path), path.stat().st_mtime),
-                     reverse=True)
+    transcripts = [
+        path
+        for path in TRANSCRIPT_ROOT.rglob("*.jsonl")
+        if path.is_file() and now - path.stat().st_mtime >= min_age_seconds
+    ]
+    transcripts.sort(key=lambda path: (is_subagent_transcript(path), path.stat().st_mtime), reverse=True)
     fallback = None
     for path in transcripts[:file_limit]:
         writes, calls = worktree_activity(path, worktree)
@@ -309,8 +285,11 @@ def calls_into(event, worktree, inside):
         if not isinstance(arguments, dict):
             continue
         target = str(arguments.get("file_path") or arguments.get("notebook_path") or "")
-        if target == str(worktree) or target.startswith(str(worktree) + os.sep) or \
-                target.startswith(str(worktree) + "/"):
+        if (
+            target == str(worktree)
+            or target.startswith(str(worktree) + os.sep)
+            or target.startswith(str(worktree) + "/")
+        ):
             found += 1
             written += block.get("name") in WRITING_TOOLS
         elif inside.search(str(arguments.get("command") or "")):
@@ -329,7 +308,7 @@ def file_contains(path, needle, chunk_size=1 << 20):
                     return False
                 if needle in carry + chunk:
                     return True
-                carry = chunk[-len(needle):]
+                carry = chunk[-len(needle) :]
     except OSError:
         return False
 
@@ -359,8 +338,11 @@ def last_assistant_text(path):
                 content = message.get("content")
                 if not isinstance(content, list):
                     continue
-                text = " ".join(block.get("text", "") for block in content
-                                if isinstance(block, dict) and block.get("type") == "text").strip()
+                text = " ".join(
+                    block.get("text", "")
+                    for block in content
+                    if isinstance(block, dict) and block.get("type") == "text"
+                ).strip()
                 if text:
                     latest = text
     except OSError:
@@ -541,54 +523,6 @@ def entry_properties(entry):
     return properties
 
 
-def cmd_launch_add(args):
-    worktree, branch, _ = resolve_worktree(args.worktree)
-    name = args.name or f"{branch.upper()}: {args.scene}"
-    path = worktree / ".vscode" / "launch.json"
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text('{\n  "version": "0.2.0",\n  "configurations": []\n}\n', encoding="utf-8")
-        print(f"created {path}")
-    text = path.read_text(encoding="utf-8")
-    for entry in launch_entries(worktree):
-        if str(entry.get("name")) == name:
-            raise SystemExit(f"{path} already has an entry named {name!r}; nothing written")
-    updated = insert_launch_entry(text, launch_entry(name, args.scene, args.property))
-    try:
-        parse_jsonc(updated)
-    except ValueError as error:
-        raise SystemExit(f"refusing to write: the result would not parse ({error})")
-    path.write_text(updated, encoding="utf-8")
-    print(f"{path}: added {name!r} (scene {args.scene})")
-    print("the user runs it with F5; `land` strips these entries before merging")
-
-
-def cmd_launch_list(args):
-    worktree, _, _ = resolve_worktree(args.worktree)
-    for entry in launch_entries(worktree):
-        print(f"{entry.get('name', '?')}  (args: {entry.get('args', '')})")
-
-
-def cmd_new(args):
-    name = args.ticket.strip().lower()
-    if not WORKTREE_NAME.match(name):
-        raise SystemExit(f"{args.ticket!r} is not a usable worktree name (use letters, digits, - . _)")
-    repo = CODE_ROOT / args.repo
-    if not (repo / ".git").exists():
-        raise SystemExit(f"{repo} is not a git repository")
-    main_branch = main_branch_of(repo)
-    worktree = repo / ".claude" / "worktrees" / name
-    if worktree.exists():
-        raise SystemExit(f"{worktree} already exists; pick another name or work in the one that is there")
-    existing = git(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{name}", check=False)
-    if existing:
-        raise SystemExit(f"branch {name!r} already exists ({existing[:8]}); pick another name")
-    worktree.parent.mkdir(parents=True, exist_ok=True)
-    git(repo, "worktree", "add", "-b", name, str(worktree), main_branch)
-    seed_environment(worktree)
-    print(brief_text(worktree, name, main_branch))
-
-
 def seed_environment(worktree):
     """Create the worktree's Python virtualenv so the first ixdar-cli call is not a cold install."""
     if not (worktree / "pyproject.toml").exists():
@@ -607,7 +541,13 @@ def seed_environment(worktree):
 
 
 def brief_text(worktree, branch, main_branch):
-    """The orientation an agent starting in this worktree needs: paths, ticket, and the wt verbs."""
+    """The orientation an agent starting in this worktree needs: paths, ticket, and the verbs.
+
+    :param worktree: the worktree directory
+    :param branch: its branch, which is also the ticket id lower-cased
+    :param main_branch: the branch it was created from
+    :return: the brief, ready to print
+    """
     ticket_id = branch.upper()
     ticket_path = ticket_path_for(branch)
     ticket_line = str(ticket_path) if ticket_path else f"no ticket {ticket_id} in {TICKET_REPO}"
@@ -617,11 +557,11 @@ def brief_text(worktree, branch, main_branch):
         f"branch:   {branch}, created from {main_branch}",
         "model:    the uncommitted diff in this worktree IS the proposed change; leave it uncommitted",
         f"ticket:   {ticket_id}  {ticket_line}",
-        "git:      add, commit, merge, branch, checkout, reset and stash are denied; wt is the one door",
-        f"  wt status {branch}      branch, distance from {main_branch}, changed files, last agent note",
-        f"  wt sync {branch}        replay your diff onto the current {main_branch} (run it first, and for newer {main_branch})",
-        f"  wt launch add {branch} --scene <id> [--property k=v]   the .vscode/launch.json entry for the user's F5",
-        f"  wt done {branch}        sync, build, run that entry, check tmp/ screenshots, mark the ticket REVIEW",
+        "git:      add, commit, merge, branch, checkout, reset and stash are denied; ixd wt is the one door",
+        f"  ixd wt status {branch}      branch, distance from {main_branch}, changed files, last agent note",
+        f"  ixd wt sync {branch}        replay your diff onto the current {main_branch} (run it first, and for newer {main_branch})",
+        f"  ixd wt launch-add {branch} --scene <id> [--property k=v]   the .vscode/launch.json entry for the user's F5",
+        f"  ixd wt done {branch}        sync, build, run that entry, check tmp/ screenshots, mark the ticket REVIEW",
     ]
     if (worktree / "pom.xml").exists():
         lines += [
@@ -629,8 +569,8 @@ def brief_text(worktree, branch, main_branch):
             f"scene:    cd {worktree} && uv run ixdar-cli run-scene --scene <id> --screenshot tmp/{branch}.png",
         ]
     lines += [
-        f"tickets:  cd {TICKET_REPO} && uv run python generate_board.py update {ticket_id} --add-changes \"...\"",
-        "never:    land (the user alone merges), raw git writes, editing files through the shell",
+        f'tickets:  cd {TICKET_REPO} && uv run python generate_board.py update {ticket_id} --add-changes "..."',
+        "never:    ixd land (the user alone merges), raw git writes, editing files through the shell",
     ]
     return "\n".join(lines)
 
@@ -639,8 +579,9 @@ def cli_has_command(worktree, name):
     """Whether this checkout's ixdar-cli offers the named command (TOOL-1's `launch` may not exist yet)."""
     if not shutil.which("uv") or not (worktree / "pyproject.toml").exists():
         return False
-    result = subprocess.run(["uv", "run", "ixdar-cli", name, "--help"], cwd=str(worktree),
-                            capture_output=True, text=True)
+    result = subprocess.run(
+        ["uv", "run", "ixdar-cli", name, "--help"], cwd=str(worktree), capture_output=True, text=True
+    )
     return result.returncode == 0 and "invalid choice" not in result.stderr
 
 
@@ -663,51 +604,6 @@ def screenshots_under(worktree):
     return sorted(images, key=lambda path: path.stat().st_mtime)
 
 
-def cmd_done(args):
-    worktree, branch, _ = resolve_worktree(args.worktree)
-    print(f"== done {branch}: sync, build, run the launch entry, check screenshots, mark REVIEW")
-    cmd_sync(argparse.Namespace(worktree=str(worktree)))
-
-    if cli_has_command(worktree, "build"):
-        run_step("build", ["uv", "run", "ixdar-cli", "build"], worktree)
-    elif (worktree / "pom.xml").exists():
-        run_step("build", BUILD_COMMAND, worktree)
-    else:
-        print("== build: no pom.xml here, skipped")
-
-    entry = entry_for_ticket(worktree, branch)
-    if entry is None:
-        names = [str(one.get("name", "?")) for one in launch_entries(worktree)]
-        raise SystemExit(
-            f"no .vscode/launch.json entry named {branch.upper()!r} or {branch.upper()}: ...; "
-            f"add one with `launch add {branch} --scene <id>` so the user can verify with F5.\n"
-            f"entries present: {', '.join(names) or 'none'}")
-    print(f"== launch entry: {entry.get('name')} (scene {entry.get('args')})")
-
-    shot = worktree / "tmp" / f"{branch}-launch.png"
-    if args.skip_launch:
-        print("== launch run SKIPPED by request; the entry was not executed this run")
-    else:
-        shot.parent.mkdir(parents=True, exist_ok=True)
-        run_step("launch run", launch_command(worktree, entry, shot), worktree)
-
-    shots = screenshots_under(worktree)
-    if not shots:
-        raise SystemExit(
-            f"{branch}: tmp/ holds no screenshot, so nothing verifies the change; the ticket is "
-            f"not marked. Capture one (run-scene --screenshot tmp/<name>.png, or the launch entry) "
-            f"and run `done` again.")
-    print(f"== screenshots: {len(shots)} under tmp/ (newest {shots[-1].relative_to(worktree)})")
-
-    ticket = ticket_for(branch)
-    if not ticket:
-        print(f"== ticket: no {branch.upper()} in {TICKET_REPO}; nothing to mark, everything else passed")
-        return
-    run_step("mark REVIEW", ["uv", "run", "python", "generate_board.py", "mark", "review", ticket["id"]],
-             TICKET_REPO)
-    print(f"{ticket['id']} is REVIEW; the user reviews the diff and runs `land {branch}`")
-
-
 def launch_command(worktree, entry, screenshot):
     """The command that runs a launch entry once and leaves its screenshot under tmp/.
 
@@ -715,16 +611,20 @@ def launch_command(worktree, entry, screenshot):
     that command exists it falls back to ``run-scene`` with the entry's scene and properties,
     which is headless and so does not exercise the desktop path."""
     if cli_has_command(worktree, "launch"):
-        return ["uv", "run", "ixdar-cli", "launch", str(entry.get("name")),
-                "--screenshot", str(screenshot)]
+        return ["uv", "run", "ixdar-cli", "launch", str(entry.get("name")), "--screenshot", str(screenshot)]
     command = ["uv", "run", "ixdar-cli", "run-scene", "--scene", str(entry.get("args"))]
     for prop in entry_properties(entry):
         command += ["--property", prop]
     return command + ["--screenshot", str(screenshot)]
 
 
-def cmd_sync(args):
-    worktree, branch, main_branch = resolve_worktree(args.worktree)
+def sync(worktree, branch, main_branch):
+    """Replay the worktree's uncommitted change onto the main branch and unpack it again.
+
+    :param worktree: the worktree directory
+    :param branch: its branch
+    :param main_branch: the branch to replay onto
+    """
     ahead, behind = ahead_behind(worktree, branch, main_branch)
     parked = stage_all(worktree)
     if parked:
@@ -732,11 +632,13 @@ def cmd_sync(args):
     if ahead == 0 and behind == 0:
         if parked:
             git(worktree, "reset", "--quiet", "--mixed", "HEAD~1")
-        print(f"{branch}: already on top of {main_branch}; {len(changed_files(worktree))} file(s) uncommitted")
+        print(
+            f"{branch}: already on top of {main_branch}; {len(changed_files(worktree))} file(s) uncommitted"
+        )
         return
     replay = subprocess.run(
-        ["git", "-C", str(worktree), "rebase", "--quiet", main_branch],
-        capture_output=True, text=True)
+        ["git", "-C", str(worktree), "rebase", "--quiet", main_branch], capture_output=True, text=True
+    )
     if replay.returncode != 0:
         conflicts = git(worktree, "diff", "--name-only", "--diff-filter=U", check=False)
         if not conflicts and not conflict_markers(worktree):
@@ -748,7 +650,8 @@ def cmd_sync(args):
             f"{branch}: replaying onto {main_branch} stopped on conflicts. The rebase is left in "
             f"progress: fix the conflict markers in the files below, then run `continue`; or run "
             f"`abort` to put everything back as it was.\n"
-            f"conflicting files:\n" + "\n".join(f"  {c}" for c in conflicts.splitlines()))
+            f"conflicting files:\n" + "\n".join(f"  {c}" for c in conflicts.splitlines())
+        )
     unpack(worktree, branch, main_branch)
 
 
@@ -756,8 +659,10 @@ def unpack(worktree, branch, main_branch):
     """Drop the replayed commits back into the working tree as an uncommitted diff on main."""
     git(worktree, "reset", "--quiet", "--mixed", main_branch)
     changed = changed_files(worktree)
-    print(f"{branch}: now on {main_branch} ({git(worktree, 'rev-parse', '--short', main_branch)}) "
-          f"with {len(changed)} file(s) as the uncommitted diff")
+    print(
+        f"{branch}: now on {main_branch} ({git(worktree, 'rev-parse', '--short', main_branch)}) "
+        f"with {len(changed)} file(s) as the uncommitted diff"
+    )
 
 
 def rebase_in_progress(worktree):
@@ -768,16 +673,32 @@ def rebase_in_progress(worktree):
 def conflict_markers(worktree):
     """The tracked files (outside tmp/) that still hold conflict markers, as git grep lists them."""
     markers = subprocess.run(
-        ["git", "-C", str(worktree), "grep", "-l", "-E", "^(<<<<<<<|=======|>>>>>>>)( |$)", "--", ".", TMP_EXCLUDE],
-        capture_output=True, text=True)
+        [
+            "git",
+            "-C",
+            str(worktree),
+            "grep",
+            "-l",
+            "-E",
+            "^(<<<<<<<|=======|>>>>>>>)( |$)",
+            "--",
+            ".",
+            TMP_EXCLUDE,
+        ],
+        capture_output=True,
+        text=True,
+    )
     return markers.stdout.strip()
 
 
-def cmd_continue(args):
-    worktree, branch, main_branch = resolve_worktree(args.worktree, allow_rebase=True)
+def require_sync_in_progress(worktree, branch):
+    """Refuse when no rebase is waiting, so `continue` and `abort` cannot act on a clean worktree.
+
+    :param worktree: the worktree directory
+    :param branch: its branch, named in the refusal
+    """
     if not rebase_in_progress(worktree):
         raise SystemExit(f"{branch}: no sync in progress")
-    continue_rebase(worktree, branch, main_branch)
 
 
 def continue_rebase(worktree, branch, main_branch):
@@ -788,23 +709,31 @@ def continue_rebase(worktree, branch, main_branch):
         raise SystemExit(f"{branch}: conflict markers remain in:\n" + markers)
     for path in unresolved:
         if not (worktree / path).exists():
-            raise SystemExit(f"{branch}: {path} is unresolved and missing from the working tree; "
-                             f"recreate it or run `abort`")
+            raise SystemExit(
+                f"{branch}: {path} is unresolved and missing from the working tree; "
+                f"recreate it or run `abort`"
+            )
     git(worktree, "add", "-A", "--", ".", TMP_EXCLUDE)
     step = subprocess.run(
         ["git", "-C", str(worktree), "-c", "core.editor=true", "rebase", "--continue"],
-        capture_output=True, text=True)
+        capture_output=True,
+        text=True,
+    )
     if step.returncode != 0:
         conflicts = git(worktree, "diff", "--name-only", "--diff-filter=U", check=False)
-        raise SystemExit(f"{branch}: next commit conflicted; fix and run `continue` again.\n"
-                         f"conflicting files:\n" + "\n".join(f"  {c}" for c in conflicts.splitlines()))
+        raise SystemExit(
+            f"{branch}: next commit conflicted; fix and run `continue` again.\n"
+            f"conflicting files:\n" + "\n".join(f"  {c}" for c in conflicts.splitlines())
+        )
     unpack(worktree, branch, main_branch)
 
 
-def cmd_abort(args):
-    worktree, branch, main_branch = resolve_worktree(args.worktree, allow_rebase=True)
-    if not rebase_in_progress(worktree):
-        raise SystemExit(f"{branch}: no sync in progress")
+def abort(worktree, branch):
+    """Abandon an interrupted sync and unpark the change it was replaying.
+
+    :param worktree: the worktree directory
+    :param branch: its branch
+    """
     git(worktree, "rebase", "--abort")
     head_message = git(worktree, "log", "-1", "--format=%s")
     if head_message == PARK_MESSAGE:
@@ -812,72 +741,27 @@ def cmd_abort(args):
     print(f"{branch}: sync aborted; the working tree is back to its pre-sync state")
 
 
-def cmd_commit(args):
-    worktree, branch, main_branch = resolve_worktree(args.worktree)
-    if not args.message.strip():
+def commit(worktree, branch, main_branch, message):
+    """Squash the whole diff into one commit sitting directly on the main branch.
+
+    :param worktree: the worktree directory
+    :param branch: its branch
+    :param main_branch: the branch the commit must sit on
+    :param message: the commit message
+    """
+    if not message.strip():
         raise SystemExit("commit message must not be empty")
     ahead, behind = ahead_behind(worktree, branch, main_branch)
     if ahead or behind:
         raise SystemExit(
             f"{branch} is {ahead} ahead / {behind} behind {main_branch}; run `sync` first so the "
-            f"result is one commit directly on top of {main_branch}")
+            f"result is one commit directly on top of {main_branch}"
+        )
     if not stage_all(worktree):
         print(f"{branch}: nothing to commit outside tmp/")
         return
-    git(worktree, "commit", "--quiet", "-m", args.message)
-    print(f"{branch}: one commit {git(worktree, 'rev-parse', '--short', 'HEAD')} on top of {main_branch}; "
-          f"fast-forwardable")
-
-
-def main(argv):
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    sub = parser.add_subparsers(dest="command", required=True)
-    p_new = sub.add_parser("new", help="create a worktree and branch off main, seed it, print the brief")
-    p_new.add_argument("ticket", help="worktree and branch name, usually the ticket id (craw-27)")
-    p_new.add_argument("--repo", choices=REPO_CHOICES, default="Ixdar",
-                       help="repository under REPO_HOME that gets the worktree (default: Ixdar)")
-    p_new.set_defaults(run=cmd_new)
-    p_status = sub.add_parser("status", help="branch, distance from main, changed files, resume note")
-    p_status.add_argument("worktree", nargs="?", default="", help=WORKTREE_HELP)
-    p_status.set_defaults(run=cmd_status)
-    p_launch = sub.add_parser("launch", help="read and edit the worktree's .vscode/launch.json")
-    launch_sub = p_launch.add_subparsers(dest="launch_command", required=True)
-    p_launch_add = launch_sub.add_parser("add", help="add one entry, keeping the file's comments")
-    p_launch_add.add_argument("worktree", nargs="?", default="", help=WORKTREE_HELP)
-    p_launch_add.add_argument("--scene", required=True, help="scene id passed to IxdarWindow")
-    p_launch_add.add_argument("--property", action="append", default=[], metavar="KEY=VALUE",
-                              help="repeatable JVM system property, written as -DKEY=VALUE")
-    p_launch_add.add_argument("--name", default="", help="entry name (default: TICKET: scene)")
-    p_launch_add.set_defaults(run=cmd_launch_add)
-    p_launch_list = launch_sub.add_parser("list", help="the entry names this worktree offers")
-    p_launch_list.add_argument("worktree", nargs="?", default="", help=WORKTREE_HELP)
-    p_launch_list.set_defaults(run=cmd_launch_list)
-    p_done = sub.add_parser("done", help="sync, build, run the launch entry, check tmp/, mark REVIEW")
-    p_done.add_argument("worktree", nargs="?", default="", help=WORKTREE_HELP)
-    p_done.add_argument("--skip-launch", action="store_true",
-                        help="do not run the launch entry (the screenshot check still applies)")
-    p_done.set_defaults(run=cmd_done)
-    p_sync = sub.add_parser("sync", help="rebase the uncommitted change onto main and leave it uncommitted")
-    p_sync.add_argument("worktree", nargs="?", default="", help=WORKTREE_HELP)
-    p_sync.set_defaults(run=cmd_sync)
-    p_continue = sub.add_parser("continue", help="after fixing conflict markers, finish an interrupted sync")
-    p_continue.add_argument("worktree", nargs="?", default="", help=WORKTREE_HELP)
-    p_continue.set_defaults(run=cmd_continue)
-    p_abort = sub.add_parser("abort", help="abandon an interrupted sync and restore the pre-sync state")
-    p_abort.add_argument("worktree", nargs="?", default="", help=WORKTREE_HELP)
-    p_abort.set_defaults(run=cmd_abort)
-    p_commit = sub.add_parser("commit", help="one squashed commit on top of main (after sync)")
-    p_commit.add_argument("worktree", nargs="?", default="", help=WORKTREE_HELP)
-    p_commit.add_argument("-m", "--message", required=True)
-    p_commit.set_defaults(run=cmd_commit)
-    args = parser.parse_args(argv)
-    args.run(args)
-
-
-def cli():
-    """Console-script entry point (`wt`)."""
-    main(sys.argv[1:])
-
-
-if __name__ == "__main__":
-    cli()
+    git(worktree, "commit", "--quiet", "-m", message)
+    print(
+        f"{branch}: one commit {git(worktree, 'rev-parse', '--short', 'HEAD')} on top of {main_branch}; "
+        f"fast-forwardable"
+    )

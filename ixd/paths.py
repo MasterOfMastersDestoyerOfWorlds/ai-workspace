@@ -10,6 +10,7 @@ Resolution order:
 2. The directory containing this ai-workspace checkout. The repositories are siblings, which
    ``.claude/settings.json`` already assumes through its ``../Ixdar`` style directory entries.
 """
+
 import os
 from pathlib import Path
 

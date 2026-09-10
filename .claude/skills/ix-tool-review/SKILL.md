@@ -30,7 +30,7 @@ that were spilled to disk are in `~/.claude/projects/<project-slug>/<session>/to
 1. **Numbers first.** Run the statistics script on every transcript in scope:
 
    ```bash
-   python3 tools/transcript_stats.py --session <session-id>
+   ixd stats --session <session-id>
    ```
 
    It prints wall time by activity, thinking time and the longest pauses, the slowest calls, error results, calls that completed

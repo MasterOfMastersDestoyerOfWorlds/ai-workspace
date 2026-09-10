@@ -22,7 +22,7 @@ sys.path.insert(0, HOOKS_DIR)
 sys.path.insert(1, os.path.dirname(HOOKS_DIR))
 
 from hook_common import block, read_event  # noqa: E402
-from tools.paths import repo_path  # noqa: E402
+from ixd.paths import repo_path  # noqa: E402
 
 CACHE_DIR = os.path.join(
     os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
@@ -119,8 +119,7 @@ def dependency_version(pom_text, artifact):
 
 def autofix_artifact_jar(version):
     """Returns the installed autofix-tool jar, or its class directory, or None."""
-    jar = os.path.expanduser(
-        f"~/.m2/repository/IXDAR/autofix-tool/{version}/autofix-tool-{version}.jar")
+    jar = os.path.expanduser(f"~/.m2/repository/IXDAR/autofix-tool/{version}/autofix-tool-{version}.jar")
     if os.path.isfile(jar):
         return jar
     classes = str(AUTOFIX_CHECKOUT / "target" / "classes")
@@ -129,14 +128,26 @@ def autofix_artifact_jar(version):
 
 def run_build_classpath(pom_path, output_path, offline):
     """Asks maven for a pom's runtime classpath, returning True when it wrote the file."""
-    command = ["mvn", "-B", "-q", "dependency:build-classpath",
-               f"-Dmdep.outputFile={output_path}", "-f", pom_path]
+    command = [
+        "mvn",
+        "-B",
+        "-q",
+        "dependency:build-classpath",
+        f"-Dmdep.outputFile={output_path}",
+        "-f",
+        pom_path,
+    ]
     if offline:
         command.insert(1, "-o")
     try:
-        subprocess.run(command, capture_output=True, text=True,
-                       timeout=MAVEN_TIMEOUT_SECONDS, check=False,
-                       cwd=os.path.dirname(pom_path) or None)
+        subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=MAVEN_TIMEOUT_SECONDS,
+            check=False,
+            cwd=os.path.dirname(pom_path) or None,
+        )
     except (OSError, subprocess.SubprocessError):
         return False
     return os.path.isfile(output_path) and os.path.getsize(output_path) > 0
@@ -156,8 +167,7 @@ def resolve_classpath(pom_text):
 
     generated_pom = os.path.join(CACHE_DIR, "pom.xml")
     with open(generated_pom, "w", encoding="utf-8") as handle:
-        handle.write(GENERATED_POM_TEMPLATE.format(
-            checkstyle=checkstyle_version, autofix=autofix_version))
+        handle.write(GENERATED_POM_TEMPLATE.format(checkstyle=checkstyle_version, autofix=autofix_version))
 
     output_path = os.path.join(CACHE_DIR, f"classpath.raw.{os.getpid()}")
     attempts = [(generated_pom, True)]
@@ -210,12 +220,15 @@ def read_cached_classpath():
 
 def run_checkstyle(classpath, path):
     """Audits one Java file, returning the violation lines checkstyle reported."""
-    java = os.path.join(os.environ["JAVA_HOME"], "bin", "java") if os.environ.get(
-        "JAVA_HOME") else "java"
+    java = os.path.join(os.environ["JAVA_HOME"], "bin", "java") if os.environ.get("JAVA_HOME") else "java"
     try:
         finished = subprocess.run(
             [java, "-cp", classpath, CHECKSTYLE_MAIN, "-c", CHECKSTYLE_CONFIGURATION, path],
-            capture_output=True, text=True, timeout=CHECKSTYLE_TIMEOUT_SECONDS, check=False)
+            capture_output=True,
+            text=True,
+            timeout=CHECKSTYLE_TIMEOUT_SECONDS,
+            check=False,
+        )
     except (OSError, subprocess.SubprocessError) as error:
         raise ClasspathUnavailable(f"checkstyle did not run ({error})") from error
     return violation_lines(finished.stdout + finished.stderr, path)
@@ -262,8 +275,10 @@ def main():
     if not violations:
         return 0
     reported = "\n".join(f"  {line}" for line in violations)
-    block(f"checkstyle on {os.path.basename(path)} (ai-workspace hook, same configuration as the "
-          f"Ixdar build):\n{reported}\nFix these now; the build fails on them.")
+    block(
+        f"checkstyle on {os.path.basename(path)} (ai-workspace hook, same configuration as the "
+        f"Ixdar build):\n{reported}\nFix these now; the build fails on them."
+    )
     return 0
 
 

@@ -19,6 +19,7 @@ Steps, each refusing to continue on failure:
 
 Works on Linux, macOS and Windows.
 """
+
 import argparse
 import shutil
 import subprocess
@@ -60,43 +61,50 @@ def main_checkout_of(worktree):
     first = listing.splitlines()[0]
     if not first.startswith("worktree "):
         raise SystemExit("cannot read the main checkout from git worktree list")
-    return Path(first[len("worktree "):]).resolve()
+    return Path(first[len("worktree ") :]).resolve()
 
 
 def run_tool(action, worktree, *extra):
     result = subprocess.run(
-        [sys.executable, str(Path(__file__).resolve().parent / "worktree_sync.py"), action, str(worktree), *extra],
-        capture_output=True, text=True)
+        [
+            sys.executable,
+            str(Path(__file__).resolve().parent / "worktree_sync.py"),
+            action,
+            str(worktree),
+            *extra,
+        ],
+        capture_output=True,
+        text=True,
+    )
     sys.stdout.write(result.stdout)
     if result.returncode != 0:
         raise SystemExit(f"{action} failed:\n{result.stderr.strip() or result.stdout.strip()}")
 
 
-def main(argv):
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("worktree", nargs="?", default="", help=worktree_sync.WORKTREE_HELP)
-    parser.add_argument("-m", "--message", default="",
-                        help="override the commit message entirely (default: built from the ticket named like the branch)")
-    parser.add_argument("--body", choices=("none", "changes", "description"), default="none",
-                        help="commit body: none (default, subject only), changes (the ticket's "
-                             "changes-made bullets), or description (the ticket's spec)")
-    parser.add_argument("--keep-launch", action="store_true",
-                        help="keep the worktree's .vscode/launch.json changes instead of restoring main's")
-    parser.add_argument("--keep-worktree", action="store_true",
-                        help="merge but leave the worktree and branch in place")
-    parser.add_argument("--no-build", action="store_true",
-                        help="skip rebuilding the main checkout after the merge")
-    parser.add_argument("--no-mark", action="store_true",
-                        help="leave the ticket's status alone instead of marking it DONE")
-    args = parser.parse_args(argv)
-
+def run(
+    given, message="", body="none", keep_launch=False, keep_worktree=False, no_build=False, no_mark=False
+):
+    """Land one worktree's change on the main branch. See the module docstring for the steps."""
+    args = argparse.Namespace(
+        worktree=given,
+        message=message,
+        body=body,
+        keep_launch=keep_launch,
+        keep_worktree=keep_worktree,
+        no_build=no_build,
+        no_mark=no_mark,
+    )
     worktree, branch, main_branch = worktree_sync.resolve_worktree(args.worktree)
     message = args.message.strip() or default_message(branch, args.body)
     print(f"== landing {branch} as: {message.splitlines()[0]}")
     main_checkout = main_checkout_of(worktree)
-    main_head_branch = worktree_sync.git(main_checkout, "symbolic-ref", "--quiet", "--short", "HEAD", check=False)
+    main_head_branch = worktree_sync.git(
+        main_checkout, "symbolic-ref", "--quiet", "--short", "HEAD", check=False
+    )
     if main_head_branch != main_branch:
-        raise SystemExit(f"main checkout {main_checkout} is on {main_head_branch!r}, not {main_branch!r}; refusing")
+        raise SystemExit(
+            f"main checkout {main_checkout} is on {main_head_branch!r}, not {main_branch!r}; refusing"
+        )
 
     print(f"== sync {branch} onto {main_branch}")
     run_tool("sync", worktree)
@@ -113,20 +121,27 @@ def main(argv):
         run_tool("commit", worktree, "-m", message)
         landed = worktree_sync.git(worktree, "rev-parse", "--short", "HEAD")
         print(f"== fast-forward {main_branch} in {main_checkout}")
-        merge = subprocess.run(["git", "-C", str(main_checkout), "merge", "--ff-only", branch],
-                               capture_output=True, text=True)
+        merge = subprocess.run(
+            ["git", "-C", str(main_checkout), "merge", "--ff-only", branch], capture_output=True, text=True
+        )
         if merge.returncode != 0:
-            raise SystemExit(f"fast-forward failed; the commit {landed} is on {branch}, nothing removed:\n"
-                             f"{merge.stderr.strip()}")
+            raise SystemExit(
+                f"fast-forward failed; the commit {landed} is on {branch}, nothing removed:\n"
+                f"{merge.stderr.strip()}"
+            )
         print(f"{main_branch} is now at {worktree_sync.git(main_checkout, 'rev-parse', '--short', 'HEAD')}")
     else:
         # Nothing left to land: the branch was already merged by hand. Only clean up, and only if
         # every commit on it is reachable from main so nothing is lost.
         ancestor = subprocess.run(
             ["git", "-C", str(main_checkout), "merge-base", "--is-ancestor", branch, main_branch],
-            capture_output=True, text=True)
+            capture_output=True,
+            text=True,
+        )
         if ancestor.returncode != 0:
-            raise SystemExit(f"{branch} has no uncommitted change but is not merged into {main_branch}; refusing")
+            raise SystemExit(
+                f"{branch} has no uncommitted change but is not merged into {main_branch}; refusing"
+            )
         print(f"== {branch} already merged into {main_branch}; cleaning up only")
 
     if args.keep_worktree:
@@ -142,6 +157,7 @@ def main(argv):
     if not args.no_build:
         rebuild_main_checkout(main_checkout)
     print("done")
+    return 0
 
 
 def remove_leftovers(worktree):
@@ -174,11 +190,17 @@ def mark_ticket_done(branch):
     if not ticket:
         print(f"== ticket: no {branch.upper()} in {TICKET_REPO}; nothing to mark")
         return
-    result = subprocess.run(["uv", "run", "python", "generate_board.py", "mark", "done", ticket["id"]],
-                            cwd=str(TICKET_REPO), capture_output=True, text=True)
+    result = subprocess.run(
+        ["uv", "run", "python", "generate_board.py", "mark", "done", ticket["id"]],
+        cwd=str(TICKET_REPO),
+        capture_output=True,
+        text=True,
+    )
     if result.returncode != 0:
-        print(f"== ticket: {ticket['id']} not marked (the merge itself is done):\n"
-              + (result.stderr or result.stdout).strip()[-1000:])
+        print(
+            f"== ticket: {ticket['id']} not marked (the merge itself is done):\n"
+            + (result.stderr or result.stdout).strip()[-1000:]
+        )
         return
     print(result.stdout.strip())
 
@@ -198,13 +220,17 @@ def rebuild_main_checkout(main_checkout):
     print(f"== rebuild {main_checkout} ({' '.join(command)})")
     result = subprocess.run(command, cwd=str(main_checkout), capture_output=True, text=True)
     if result.returncode != 0:
-        raise SystemExit("rebuild failed (the merge itself is done):\n" + (result.stderr or result.stdout).strip()[-3000:])
+        raise SystemExit(
+            "rebuild failed (the merge itself is done):\n" + (result.stderr or result.stdout).strip()[-3000:]
+        )
     print("rebuilt; restart any running scene to pick up the merge")
 
 
 def cli():
-    """Console-script entry point (`land`)."""
-    main(sys.argv[1:])
+    """Script entry point: `ixd land` is the command, this is the direct-invocation path."""
+    from ixd.cli import main as ixd_main
+
+    raise SystemExit(ixd_main(["land", *sys.argv[1:]]))
 
 
 if __name__ == "__main__":

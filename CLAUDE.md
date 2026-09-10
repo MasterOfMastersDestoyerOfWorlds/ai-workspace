@@ -6,14 +6,18 @@ and reach other repos (Ixdar, ixdar-tickets, autofix, obsidian) as additional di
 ## Repo layout
 
 Every repo lives directly under `$REPO_HOME`, the parent directory of this checkout unless the
-`REPO_HOME` environment variable says otherwise (`~/Code` on the user's machines; `tools/paths.py`
-resolves it, `README.md` explains it, `uv run setup` configures a new machine). Reach the repos by
+`REPO_HOME` environment variable says otherwise (`~/Code` on the user's machines; `ixd/paths.py`
+resolves it, `README.md` explains it, `ixd setup` configures a new machine). Reach the repos by
 absolute path, never by moving the session. Never write a machine-specific path into a tracked
 file.
 
 - `$REPO_HOME/ai-workspace` — this repo. `.claude/settings.json` (permissions, the deny list),
-  `.claude/skills/`, `hooks/`, `tools/` (`wt` = `worktree_sync.py`, `land` = `worktree_land.py`,
-  `setup`, `transcript_stats.py`), `repos.json` and `reports/` (tool-review reports).
+  `.claude/skills/`, `hooks/`, `ixd/` (the CLI: every command is a decorated function at
+  `ixd/commands/<command>/<subcommand>.py`, and `README.md` plus `HELP.md` are generated from those
+  docstrings by `ixd docs`; the shared engines are `worktree.py`, `machine.py`, `transcripts.py`
+  and `paths.py`), `repos.json` and `reports/`. `ixd` is the only executable: `ixd wt`, `ixd land`,
+  `ixd setup`, `ixd stats`, `ixd docs`. The bare `wt`, `land` and `setup` names are gone. Run
+  `ixd docs` after changing a docstring and `uv run black ixd hooks` after changing any Python here.
 - `$REPO_HOME/Ixdar` — the Java/Maven application (`annotations`, `ixdar-app`) plus the
   `ixdar_automation_cli` Python CLI (`uv run ixdar-cli`). Agent worktrees live at
   `Ixdar/.claude/worktrees/<ticket>`; `Ixdar/CLAUDE.md` carries the code conventions.
@@ -41,7 +45,7 @@ add or allow it in this repo's `.claude/settings.json` rather than relocating th
 autofix. An agent working on a ticket in any of those repos writes the tests that repo's own
 CLAUDE.md and the ticket ask for, and must ignore this section entirely.
 
-Nothing under `hooks/` or `tools/` carries a test suite: no `test_*.py`, no pytest dependency, no
+Nothing under `hooks/` or `ixd/` carries a test suite: no `test_*.py`, no pytest dependency, no
 test runner in `pyproject.toml`. Verify a change here by running the tool or the hook and showing
 its output.
 
@@ -58,8 +62,8 @@ rate limit and were killed mid-work. When relaunching an interrupted agent, tell
 
 For Ixdar tickets, agents work in `$REPO_HOME/Ixdar/.claude/worktrees/<ticket>` on a branch
 of the same name and add a `.vscode/launch.json` entry plus screenshots under `tmp/` so the user
-can verify with F5. Git inside a worktree goes through `wt` (installed from this repo's pyproject with
-`uv tool install --editable .`; same as `python3 tools/worktree_sync.py`); it takes a worktree
+can verify with F5. Git inside a worktree goes through `ixd wt` (the bare `wt` is an alias;
+installed from this repo's pyproject with `uv tool install --editable .`); it takes a worktree
 path or a bare name such as `craw-27`, refuses the main checkout and the main branch, and
 `git add`, `git commit`, `git merge` stay denied. The model:
 the worktree's uncommitted diff is the proposed change, sitting directly on top of master so
@@ -72,9 +76,9 @@ the launch.json entry as JSONC, comments intact) and `wt done <ticket>` (sync, b
 entry, check `tmp/` holds a screenshot, mark the ticket REVIEW, refusing with a reason on any
 failed step); `commit -m` makes one squashed commit on top of master (only after a sync). Agents
 leave their work uncommitted; they run `sync` when they need newer master. The
-user alone merges to master, with `land <name>` (sync, strip launch.json entries, squash-commit
-with the ticket title as message, fast-forward master, remove the worktree and branch). `land` is
-on the deny list; never run it or suggest a way around it. Those launch entries are verification aids the user strips
+user alone merges to master, with `ixd land <name>` (sync, strip launch.json entries, squash-commit
+with the ticket title as message, fast-forward master, remove the worktree and branch, mark the
+ticket DONE). `land` is on the deny list in every spelling; never run it or suggest a way around it. Those launch entries are verification aids the user strips
 before merging. Do not create `VERIFICATION.md` files; put verification results in the agent's
 final report and on the ticket.
 

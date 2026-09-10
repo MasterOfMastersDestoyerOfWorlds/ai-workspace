@@ -77,7 +77,7 @@ def arguments_after_program(tokens):
     program = program_name(tokens)
     for index, token in enumerate(tokens):
         if os.path.basename(token) == program:
-            return tokens[index + 1:]
+            return tokens[index + 1 :]
     return tokens[1:]
 
 
@@ -169,8 +169,9 @@ def script_writes_files(script):
 
 def script_path_literals(script):
     """Returns the quoted strings in a script that look like paths."""
-    return [literal for literal in QUOTED_LITERAL.findall(script)
-            if "/" in literal or looks_like_source(literal)]
+    return [
+        literal for literal in QUOTED_LITERAL.findall(script) if "/" in literal or looks_like_source(literal)
+    ]
 
 
 def find_violation(command, cwd):
@@ -182,10 +183,12 @@ def find_violation(command, cwd):
             continue
         literals = script_path_literals(script)
         if not literals:
-            return ("an inline python script writes files through the shell, and the hook cannot "
-                    "see which ones", EDIT_ADVICE)
-        offenders = [literal for literal in literals
-                     if classify_path(literal, cwd) in (PROTECTED, UNKNOWN)]
+            return (
+                "an inline python script writes files through the shell, and the hook cannot "
+                "see which ones",
+                EDIT_ADVICE,
+            )
+        offenders = [literal for literal in literals if classify_path(literal, cwd) in (PROTECTED, UNKNOWN)]
         if offenders:
             return (f"an inline python script writes {offenders[0]} through the shell", EDIT_ADVICE)
 
@@ -198,23 +201,23 @@ def find_violation(command, cwd):
         targets = in_place_editor_targets(tokens)
         if targets is not None:
             if not targets:
-                return (f"{program} edits in place and the hook cannot name its targets",
-                        EDIT_ADVICE)
-            offenders = [target for target in targets
-                         if classify_path(target, cwd) in (PROTECTED, UNKNOWN)]
+                return (f"{program} edits in place and the hook cannot name its targets", EDIT_ADVICE)
+            offenders = [target for target in targets if classify_path(target, cwd) in (PROTECTED, UNKNOWN)]
             if offenders:
                 return (f"{program} edits {offenders[0]} in place", EDIT_ADVICE)
 
         piped = tee_targets(tokens)
         if piped:
-            offenders = [target for target in piped
-                         if classify_path(target, cwd) == PROTECTED and looks_like_source(target)]
+            offenders = [
+                target
+                for target in piped
+                if classify_path(target, cwd) == PROTECTED and looks_like_source(target)
+            ]
             if offenders:
                 return (f"tee writes {offenders[0]}, a tracked source file", EDIT_ADVICE)
 
         if program == "cat" and ">" not in segment:
-            operands = [token for token in arguments_after_program(tokens)
-                        if not token.startswith("-")]
+            operands = [token for token in arguments_after_program(tokens) if not token.startswith("-")]
             protected = [token for token in operands if classify_path(token, cwd) == PROTECTED]
             if len(operands) >= CAT_ARGUMENT_LIMIT and len(protected) >= 2:
                 return (f"cat reads {len(operands)} files in one call", READ_ADVICE)

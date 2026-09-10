@@ -27,8 +27,7 @@ SLEEP_CALL = re.compile(r"(?:^|[\s;&|(])sleep\s")
 
 # A sleep whose result feeds another command: the fixed-wait poll the review kept finding.
 SLEEP_CHAIN = re.compile(
-    r"(?:^|[\s;&|(])sleep\s+[0-9.]+\s*(?:;|&&|\|\||\|)\s*\S"
-    r"|(?:;|&&|\|\|)\s*sleep\s+[0-9.]+"
+    r"(?:^|[\s;&|(])sleep\s+[0-9.]+\s*(?:;|&&|\|\||\|)\s*\S" r"|(?:;|&&|\|\|)\s*sleep\s+[0-9.]+"
 )
 
 # The harness writes a background command's output under <session>/tasks/<id>.output.

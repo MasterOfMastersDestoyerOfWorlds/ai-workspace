@@ -1,33 +1,23 @@
-"""Set this machine up: clone every repository, install the tools, record REPO_HOME.
+"""The steps `ixd setup` runs to prepare a machine.
 
-    uv run setup [--repo-home DIR] [--dry-run] [--no-shell] [--no-tools] [--no-maven]
-
-Runs from the ai-workspace checkout on Linux, macOS and Windows. Every step is idempotent, so
-rerunning after a partial failure is safe.
-
-  1. repositories  clone each entry of repos.json into REPO_HOME (skipped when present)
-  2. tools         uv tool install --editable . (wt, land, setup) and uv sync (hook venv)
-  3. REPO_HOME     .claude/settings.local.json env (Claude sessions and hooks) and the shell
-                   profile (bash, zsh, fish) or the user environment on Windows (setx)
+  1. repositories  clone each entry of repos.json into REPO_HOME, skipping what is present
+  2. commands      uv tool install --editable . for `ixd`, and uv sync for the hook environment
+  3. REPO_HOME     .claude/settings.local.json for Claude sessions and hooks, and the shell profile
+                   (bash, zsh, fish) or the user environment on Windows
   4. autofix       mvn install of the checkstyle artifact Ixdar's build and the edit hook need
 
-REPO_HOME defaults to the directory containing this checkout: the other repositories are its
-siblings, which .claude/settings.json already assumes. Pass --repo-home to put them elsewhere.
+Every step is idempotent, so rerunning after a partial failure is safe. Works on Linux, macOS and
+Windows.
 """
-import argparse
+
 import json
 import os
 import platform
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
-try:
-    from tools.paths import MANIFEST, REPO_HOME_VARIABLE, WORKSPACE_ROOT, repo_home
-except ImportError:  # run as a plain script from the tools directory
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from paths import MANIFEST, REPO_HOME_VARIABLE, WORKSPACE_ROOT, repo_home  # noqa: E402
+from .paths import MANIFEST, REPO_HOME_VARIABLE, WORKSPACE_ROOT, repo_home
 
 LOCAL_SETTINGS = WORKSPACE_ROOT / ".claude" / "settings.local.json"
 
@@ -75,9 +65,11 @@ def remote_url(checkout):
 
 def same_repository(left, right):
     """Two remote urls name the same repository when they agree ignoring scheme and .git."""
+
     def key(url):
         rest = url.lower().rstrip("/").removesuffix(".git").split("://", 1)[-1]
         return rest.split("@", 1)[-1].replace(":", "/", 1)
+
     return bool(left) and key(left) == key(right)
 
 
@@ -91,13 +83,18 @@ def clone_repositories(home, manifest, dry_run):
             continue
         elsewhere = Path.home() / name
         if elsewhere != target and same_repository(remote_url(elsewhere), entry["url"]):
-            print(f"  {name}: already cloned at {elsewhere}; move or symlink it to {target} (not cloning twice)")
+            print(
+                f"  {name}: already cloned at {elsewhere}; move or symlink it to {target} (not cloning twice)"
+            )
             continue
         run(["git", "clone", "--branch", entry["branch"], entry["url"], target], dry_run=dry_run)
 
 
 def install_tools(dry_run):
-    """Installs wt, land and setup on PATH and creates the venv the hooks and tests run in."""
+    """Install `ixd` on PATH and create the environment the hooks run in.
+
+    :param dry_run: print the commands without running them
+    """
     print("== tools")
     if shutil.which("uv") is None:
         print("  uv is not installed; get it from https://docs.astral.sh/uv/ and rerun")
@@ -170,35 +167,28 @@ def install_autofix(home, dry_run):
     run(["mvn", "-q", "install", "-DskipTests"], cwd=autofix, dry_run=dry_run)
 
 
-def main(argv):
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--repo-home", default="", help=f"where the repositories live (default: ${REPO_HOME_VARIABLE} or the parent of this checkout)")
-    parser.add_argument("--dry-run", action="store_true", help="print every step without running it")
-    parser.add_argument("--no-shell", action="store_true", help="do not touch the shell profile or user environment")
-    parser.add_argument("--no-tools", action="store_true", help="skip uv tool install and uv sync")
-    parser.add_argument("--no-maven", action="store_true", help="skip installing the autofix artifact")
-    args = parser.parse_args(argv)
+def prepare(given_home="", dry_run=False, no_shell=False, no_tools=False, no_maven=False):
+    """Prepare this machine, running the steps in the module docstring.
 
-    home = Path(os.path.expanduser(args.repo_home)).resolve() if args.repo_home else repo_home()
-    print(f"{REPO_HOME_VARIABLE} = {home}" + (" (dry run)" if args.dry_run else ""))
-    if not args.dry_run:
+    :param given_home: where the repositories should live, or empty for the default
+    :param dry_run: print every step without running it
+    :param no_shell: leave the shell profile and the user environment alone
+    :param no_tools: skip installing the commands and syncing the environment
+    :param no_maven: skip installing the autofix artifact
+    :return: the exit code, always zero when nothing raised
+    """
+    home = Path(os.path.expanduser(given_home)).resolve() if given_home else repo_home()
+    print(f"{REPO_HOME_VARIABLE} = {home}" + (" (dry run)" if dry_run else ""))
+    if not dry_run:
         home.mkdir(parents=True, exist_ok=True)
-    clone_repositories(home, load_manifest(), args.dry_run)
-    if not args.no_tools:
-        install_tools(args.dry_run)
+    clone_repositories(home, load_manifest(), dry_run)
+    if not no_tools:
+        install_tools(dry_run)
     print(f"== {REPO_HOME_VARIABLE}")
-    write_local_settings(home, args.dry_run)
-    if not args.no_shell:
-        configure_shell(home, args.dry_run)
-    if not args.no_maven:
-        install_autofix(home, args.dry_run)
+    write_local_settings(home, dry_run)
+    if not no_shell:
+        configure_shell(home, dry_run)
+    if not no_maven:
+        install_autofix(home, dry_run)
     print("done; open a new terminal so the shell picks up " + REPO_HOME_VARIABLE)
-
-
-def cli():
-    """Console-script entry point (`setup`)."""
-    main(sys.argv[1:])
-
-
-if __name__ == "__main__":
-    cli()
+    return 0

@@ -1,22 +1,16 @@
-#!/usr/bin/env python3
-"""Summarise how agents spent their time and which tools they used, from Claude Code transcripts.
+"""What `ixd stats` reads out of Claude Code transcripts.
 
-    transcript_stats.py <transcript.jsonl>...          one or more session/subagent transcripts
-    transcript_stats.py --session <id>                 the session plus every subagent under it
-    transcript_stats.py --latest [N]                   the N most recent sessions (default 1)
-
-Prints, per transcript and in total: wall time, tool-call counts, wall time by activity
-category (attributed to the call that started it, so it includes the model's thinking before
-the next call), the slowest calls, calls whose result was an error, calls that completed with
-no output, consecutive retries of the same command shape, and the most repeated Bash command
-shapes (paths, numbers and quoted strings normalised). Read-only; used by /ix-tool-review.
+Per transcript and in total: wall time, tool-call counts, wall time by activity category
+(attributed to the call that started it, so it includes the model's thinking before the next call),
+the slowest calls, calls whose result was an error, calls that completed with no output, consecutive
+retries of the same command shape, and the most repeated Bash command shapes with paths, numbers and
+quoted strings normalised. Read-only, and the first thing /ix-tool-review looks at.
 """
-import argparse
+
 import collections
 import datetime
 import json
 import re
-import sys
 from pathlib import Path
 
 PROJECTS = Path.home() / ".claude" / "projects"
@@ -24,12 +18,18 @@ PROJECTS = Path.home() / ".claude" / "projects"
 CATEGORIES = [
     ("scene run/restart/wait", r"run-scene|shutdown|/health|ixdar-cli health"),
     ("build/test", r"\bmvn\b|teavm|pytest|unittest|checkstyle"),
-    ("scene drive (hover/click/key/screenshot)", r"ixdar-cli (hover|click|key|screenshot|multiview|orbit|ui-state|probe)"),
+    (
+        "scene drive (hover/click/key/screenshot)",
+        r"ixdar-cli (hover|click|key|screenshot|multiview|orbit|ui-state|probe)",
+    ),
     ("ixdar-cli other", r"ixdar-cli"),
     ("tickets", r"generate_board"),
     ("git/wt", r"^\s*(cd [^&]*&& )?(git|wt) "),
     ("edit via shell", r"python3? - <<|sed -i|cat > |tee |patch "),
-    ("read/search via shell", r"^\s*(cd [^&]*&& )?(cat|sed -n|grep|rg|ls|head|tail|wc|find|diff|pdfinfo|which|for f)"),
+    (
+        "read/search via shell",
+        r"^\s*(cd [^&]*&& )?(cat|sed -n|grep|rg|ls|head|tail|wc|find|diff|pdfinfo|which|for f)",
+    ),
 ]
 
 
@@ -90,8 +90,10 @@ def summarise(path, calls, top, idle):
         return collections.Counter(), collections.Counter()
     wall = max(stamps) - min(stamps)
     print(f"\n=== {path}")
-    print(f"wall {wall}  tool calls {len(calls)}  "
-          + "  ".join(f"{n} {k}" for k, n in collections.Counter(c[1] for c in calls).most_common()))
+    print(
+        f"wall {wall}  tool calls {len(calls)}  "
+        + "  ".join(f"{n} {k}" for k, n in collections.Counter(c[1] for c in calls).most_common())
+    )
 
     def describe(name, inp):
         text = inp.get("command") if name == "Bash" else (inp.get("file_path") or inp.get("pattern") or "")
@@ -123,8 +125,10 @@ def summarise(path, calls, top, idle):
 
     pauses = sorted(((span - run, name, inp) for run, span, name, inp, _, _ in rows), key=lambda r: -r[0])
     think = sum(p for p, _, _ in pauses)
-    print(f"\nthinking: {think/60:.1f} min between results and the next call "
-          f"({think/max(len(rows),1):.0f}s mean); longest pauses and the call they led to:")
+    print(
+        f"\nthinking: {think/60:.1f} min between results and the next call "
+        f"({think/max(len(rows),1):.0f}s mean); longest pauses and the call they led to:"
+    )
     for pause, name, inp in pauses[:top]:
         print(f"  {pause:6.0f}s  {name:6} {describe(name, inp)}")
 
@@ -135,11 +139,17 @@ def summarise(path, calls, top, idle):
     print(f"\nerror results: {len(errors)}")
     for name, inp, text in errors[:top]:
         print(f"  {name:6} {describe(name, inp)}\n         -> {text.strip()[:150]!r}")
-    silent = [(name, inp) for _, _, name, inp, text, _ in rows if name == "Bash" and "completed with no output" in text]
+    silent = [
+        (name, inp)
+        for _, _, name, inp, text, _ in rows
+        if name == "Bash" and "completed with no output" in text
+    ]
     print(f"\nbash calls that completed with no output: {len(silent)}")
     for name, inp in silent[:top]:
         print(f"  {describe(name, inp)}")
-    shapes = collections.Counter(shape(inp.get("command", "")) for _, _, name, inp, _, _ in rows if name == "Bash")
+    shapes = collections.Counter(
+        shape(inp.get("command", "")) for _, _, name, inp, _, _ in rows if name == "Bash"
+    )
     print(f"\nmost repeated bash command shapes:")
     for s, n in shapes.most_common(top):
         if n > 1:
@@ -155,44 +165,24 @@ def summarise(path, calls, top, idle):
     return by_cat, n_cat
 
 
-def resolve(args):
-    paths = [Path(p) for p in args.transcripts]
-    if args.session:
+def resolve(transcripts=(), session="", latest=0):
+    """Collect the transcript files to summarise, subagents included.
+
+    :param transcripts: explicit transcript paths
+    :param session: a session id, which also pulls in every subagent under it
+    :param latest: how many of the most recent sessions to read, with their subagents
+    :return: the transcript paths, in the order they should be reported
+    """
+    paths = [Path(one) for one in transcripts]
+    if session:
         for project in PROJECTS.iterdir():
-            main = project / f"{args.session}.jsonl"
-            if main.exists():
-                paths.append(main)
-                paths += sorted((project / args.session / "subagents").glob("agent-*.jsonl"))
-    if args.latest:
-        sessions = sorted(PROJECTS.glob("*/*.jsonl"), key=lambda p: p.stat().st_mtime)[-args.latest:]
-        for main in sessions:
-            paths.append(main)
-            paths += sorted((main.parent / main.stem / "subagents").glob("agent-*.jsonl"))
+            found = project / f"{session}.jsonl"
+            if found.exists():
+                paths.append(found)
+                paths += sorted((project / session / "subagents").glob("agent-*.jsonl"))
+    if latest:
+        recent = sorted(PROJECTS.glob("*/*.jsonl"), key=lambda one: one.stat().st_mtime)[-latest:]
+        for found in recent:
+            paths.append(found)
+            paths += sorted((found.parent / found.stem / "subagents").glob("agent-*.jsonl"))
     return paths
-
-
-def main(argv):
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("transcripts", nargs="*")
-    parser.add_argument("--session", help="session id; includes its subagents")
-    parser.add_argument("--latest", type=int, nargs="?", const=1, help="N most recent sessions with subagents")
-    parser.add_argument("--top", type=int, default=12, help="rows per list")
-    parser.add_argument("--idle", type=float, default=600,
-                        help="seconds of gap after a result that count as idle, not activity (default 600)")
-    args = parser.parse_args(argv)
-    paths = resolve(args)
-    if not paths:
-        raise SystemExit("no transcripts given")
-    total_cat, total_n = collections.Counter(), collections.Counter()
-    for path in paths:
-        by_cat, n_cat = summarise(path, load_calls(path), args.top, args.idle)
-        total_cat.update(by_cat)
-        total_n.update(n_cat)
-    if len(paths) > 1:
-        print("\n=== all transcripts, wall time by activity:")
-        for cat, span in total_cat.most_common():
-            print(f"  {span/60:6.1f} min  {total_n[cat]:4d} calls  {cat}")
-
-
-if __name__ == "__main__":
-    main(sys.argv[1:])

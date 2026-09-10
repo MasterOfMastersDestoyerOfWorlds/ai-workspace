@@ -18,60 +18,64 @@ import sys
 BLOCK_EXIT_CODE = 2
 
 # Directory names whose contents are scratch: writing to them through the shell is fine.
-TEMPORARY_DIR_NAMES = frozenset({
-    "tmp",
-    "temp",
-    "target",
-    "build",
-    "dist",
-    "out",
-    "node_modules",
-    "__pycache__",
-    ".venv",
-    "venv",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".ruff_cache",
-    "scratchpad",
-    "logs",
-})
+TEMPORARY_DIR_NAMES = frozenset(
+    {
+        "tmp",
+        "temp",
+        "target",
+        "build",
+        "dist",
+        "out",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        "scratchpad",
+        "logs",
+    }
+)
 
 # Filesystem roots that never hold tracked source.
 TEMPORARY_ROOTS = ("/tmp", "/var/tmp", "/dev", "/proc", "/run", "/sys")
 
 # Suffixes that make a path worth protecting from a shell redirection.
-SOURCE_SUFFIXES = frozenset({
-    ".java",
-    ".py",
-    ".json",
-    ".xml",
-    ".md",
-    ".toml",
-    ".yaml",
-    ".yml",
-    ".gradle",
-    ".kt",
-    ".ts",
-    ".tsx",
-    ".js",
-    ".jsx",
-    ".sh",
-    ".dsl",
-    ".glsl",
-    ".vert",
-    ".frag",
-    ".properties",
-    ".cfg",
-    ".ini",
-    ".html",
-    ".css",
-    ".sql",
-    ".c",
-    ".h",
-    ".cpp",
-    ".rs",
-    ".go",
-})
+SOURCE_SUFFIXES = frozenset(
+    {
+        ".java",
+        ".py",
+        ".json",
+        ".xml",
+        ".md",
+        ".toml",
+        ".yaml",
+        ".yml",
+        ".gradle",
+        ".kt",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".sh",
+        ".dsl",
+        ".glsl",
+        ".vert",
+        ".frag",
+        ".properties",
+        ".cfg",
+        ".ini",
+        ".html",
+        ".css",
+        ".sql",
+        ".c",
+        ".h",
+        ".cpp",
+        ".rs",
+        ".go",
+    }
+)
 
 # A path token the hook could not evaluate, because a variable or a glob stands in for it.
 UNKNOWN = "unknown"
@@ -173,7 +177,7 @@ def split_segments(command):
     segments = []
     start = 0
     for match in SHELL_OPERATORS.finditer(masked):
-        segments.append(command[start:match.start()])
+        segments.append(command[start : match.start()])
         start = match.end()
     segments.append(command[start:])
     return [segment.strip() for segment in segments if segment.strip()]
