@@ -20,6 +20,9 @@ CACHE = Path.home() / ".cache" / "ai-workspace"
 
 TAILNET = "100.64.0.0/10"
 
+# Microsoft's own Win32-OpenSSH build, for boxes whose Features-on-Demand servicing is wedged.
+WINGET_SERVER = "Microsoft.OpenSSH.Preview"
+
 SSH_OPTIONS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new"]
 
 
@@ -54,6 +57,12 @@ def script(key_line):
     authorized_keys and reads administrators_authorized_keys instead, so the account's group
     membership picks the file, and the ACL that file demands is applied only in that case.
 
+    Installing the server is the step that can half-succeed. The Features-on-Demand capability
+    reports Installed while its services are unregistered, or parks at InstallPending across every
+    reboot when servicing is backed up, and both look like success until ``Set-Service`` says sshd
+    was not found. So the capability's own ``install-sshd.ps1`` runs when the service is missing,
+    Microsoft's standalone MSI installs it when that fails too, and the service is what decides.
+
     :param key_line: this machine's public key, as one authorized_keys line
     """
     return f"""$ErrorActionPreference = 'Stop'
@@ -64,10 +73,42 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
   throw 'run this from an elevated PowerShell'
 }}
 
-if ((Get-WindowsCapability -Online -Name 'OpenSSH.Server*').State -ne 'Installed') {{
-  Write-Host 'installing the OpenSSH server'
-  Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null
-}} else {{ Write-Host 'OpenSSH server already installed' }}
+$capability = Get-WindowsCapability -Online -Name 'OpenSSH.Server*' |
+  Sort-Object Name -Descending | Select-Object -First 1
+if ($capability -and $capability.State -ne 'Installed') {{
+  Write-Host ('installing ' + $capability.Name)
+  # The result carries RestartNeeded: swallowing it leaves a staged install looking like a done one.
+  $added = Add-WindowsCapability -Online -Name $capability.Name
+  if ($added.RestartNeeded) {{ Write-Host 'Windows wants a restart to finish that' }}
+}} elseif ($capability) {{ Write-Host 'OpenSSH server already installed' }}
+
+# The capability can read Installed while its services are still unregistered; the server ships the
+# installer that registers them, and without it Set-Service says only "service sshd was not found".
+if (-not (Get-Service sshd -ErrorAction SilentlyContinue)) {{
+  $installer = Join-Path $env:SystemRoot 'System32\\OpenSSH\\install-sshd.ps1'
+  if (Test-Path $installer) {{
+    Write-Host 'registering the sshd service'
+    & $installer
+  }}
+}}
+
+# Wedged servicing parks the capability at InstallPending through any number of reboots, so fall
+# back to the same server as Microsoft's standalone MSI, which installs without going through CBS.
+if (-not (Get-Service sshd -ErrorAction SilentlyContinue)) {{
+  if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {{
+    throw ('the OpenSSH.Server capability produced no sshd service and winget is not here to ' +
+      'install the MSI instead; take it from https://github.com/PowerShell/Win32-OpenSSH/releases')
+  }}
+  Write-Host 'the Windows capability produced no sshd service; installing the OpenSSH MSI instead'
+  winget install --id {WINGET_SERVER} --exact --source winget --accept-source-agreements `
+    --accept-package-agreements --disable-interactivity
+  $env:PATH = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
+}}
+if (-not (Get-Service sshd -ErrorAction SilentlyContinue)) {{
+  $state = if ($capability) {{ $capability.State }} else {{ 'absent' }}
+  throw ("still no sshd service (OpenSSH.Server capability: $state); install the server by hand " +
+    'from https://github.com/PowerShell/Win32-OpenSSH/releases, then run this again')
+}}
 
 Set-Service -Name sshd -StartupType Automatic
 if ((Get-Service sshd).Status -ne 'Running') {{ Start-Service sshd }}
