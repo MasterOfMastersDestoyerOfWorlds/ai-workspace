@@ -1,14 +1,15 @@
 """Bring the ninfer server on the Windows box up over the tailnet and point pi at it.
 
+The server is a source build inside that box's WSL distro, not a Windows binary, so starting it
+means reaching through ssh into WSL. Two things follow from that and both are done on every start:
+it binds 0.0.0.0 rather than WSL's own loopback, and Windows forwards the port inward, because WSL2
+is NAT'd there and the distro takes a new address each time it comes up.
+
 ninfer holds exactly one model resident: it loads at process start, and the runtime has no lazy
 load, no idle unload and no model swapping. The GPU stays occupied for as long as the server runs,
-so nothing on the Windows box starts at boot. This command is the trigger instead: it starts the
-server when a model is wanted, waits for the weights to materialise, and ``--stop`` hands the card
-back. ``--install`` does the one-time Windows setup over ssh, once `ixd ssh setup` has opened that
-door; it expects ninfer-serve.exe and a model file to be on the box already.
+so nothing starts at boot. This command is the trigger instead, and ``--stop`` hands the card back.
 """
 
-import base64
 import json
 import subprocess
 import time
@@ -16,14 +17,18 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from ... import windows
 from ...registry import cli_command
-from ..ssh.setup import SSH_OPTIONS, TAILNET
 
 MODELS_FILE = Path.home() / ".pi" / "agent" / "models.json"
 
 PROVIDER = "ninfer"
 
-DEFAULT_FLAGS = "--max-context 32768 --kv-capacity auto --max-concurrency 2"
+START = "ninfer-start.sh"
+
+STOP = "ninfer-stop.sh"
+
+FORWARD = "ninfer-forward.ps1"
 
 
 def tailnet_ready(host):
@@ -57,80 +62,44 @@ def advertised(base_url, timeout=5):
     return [entry["id"] for entry in payload.get("data", []) if entry.get("id")]
 
 
-def task_command(target, verb, task):
-    """Run one schtasks verb against the remote task over ssh.
+def start(target, port, root, model, flags):
+    """Start the server inside WSL, returning its output and the distro's address.
 
     :param target: the ssh destination, user@host or host
-    :param verb: the schtasks switch, /run or /end
-    :param task: the scheduled task's name
-    """
-    return subprocess.run(
-        ["ssh", *SSH_OPTIONS, target, "schtasks", verb, "/tn", task],
-        capture_output=True,
-        text=True,
-    )
-
-
-def install_script(task, port, model, flags):
-    """The PowerShell that sets the Windows box up, rerunnable without doubling anything up.
-
-    The launcher is a batch file the box owns, so the model path and the flags that suit that card
-    stay there rather than in this repo. The task exists because a process started straight from an
-    ssh command dies with the session; a scheduled task outlives it.
-
-    :param task: the scheduled task's name to create
     :param port: the port the server should listen on
-    :param model: the model file's path on the Windows box
-    :param flags: the ninfer-serve flags that suit that card
+    :param root: the ninfer checkout inside WSL, or empty for the script's own
+    :param model: the model file's path under that checkout, or empty for the script's own
+    :param flags: the ninfer-serve flags, or empty for the script's own
     """
-    return f"""$ErrorActionPreference = 'Stop'
-$root = Join-Path $env:USERPROFILE 'ninfer'
-$exe = Join-Path $root 'ninfer-serve.exe'
-$model = '{model}'
-if (-not (Test-Path $exe)) {{ throw "no ninfer-serve.exe at $exe" }}
-if (-not (Test-Path $model)) {{ throw "no model at $model" }}
-
-$launcher = Join-Path $root 'start-ninfer.bat'
-# --host past loopback, or nothing off this box can reach it.
-$lines = @('@echo off', '"' + $exe + '" "' + $model + '" --host 0.0.0.0 --port {port} {flags}')
-Set-Content -Encoding ascii -Path $launcher -Value $lines
-Write-Host "launcher: $launcher"
-
-# Register-ScheduledTask rather than schtasks.exe: passing a quoted path through /tr loses its
-# quotes to PowerShell's native-argument handling, and %USERPROFILE% may hold a space.
-# Interactive, so it runs in the logged-on session where the GPU is uncontested. No trigger:
-# nothing at boot, because ninfer holds its model resident and would hold the card with it.
-$action = New-ScheduledTaskAction -Execute $launcher
-$principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\\$env:USERNAME" -LogonType Interactive
-Register-ScheduledTask -TaskName '{task}' -Action $action -Principal $principal -Force | Out-Null
-Write-Host 'task: {task}'
-
-$rule = Get-NetFirewallRule -DisplayName 'ninfer (tailnet)' -ErrorAction SilentlyContinue
-if (-not $rule) {{
-  New-NetFirewallRule -DisplayName 'ninfer (tailnet)' -Direction Inbound -Protocol TCP `
-    -LocalPort {port} -RemoteAddress {TAILNET} -Action Allow | Out-Null
-}} else {{
-  Set-NetFirewallRule -DisplayName 'ninfer (tailnet)' -LocalPort {port} -RemoteAddress {TAILNET}
-}}
-Write-Host 'port {port} is open to the tailnet only'
-"""
+    environment = {"NINFER_PORT": port}
+    for name, value in (("NINFER_ROOT", root), ("NINFER_MODEL", model), ("NINFER_FLAGS", flags)):
+        if value:
+            environment[name] = value
+    started = windows.wsl(target, START, environment)
+    if started.returncode != 0:
+        raise SystemExit("could not start the server in WSL:\n" + (started.stderr or started.stdout).strip())
+    lines = [line.strip() for line in started.stdout.splitlines() if line.strip()]
+    address = next((line.split()[1] for line in lines if line.startswith("wsl-address ")), "")
+    for line in lines:
+        if not line.startswith("wsl-address "):
+            print(f"  wsl: {line}")
+    if not address:
+        raise SystemExit("the WSL distro reported no address to forward to:\n" + started.stdout.strip())
+    return address
 
 
-def install(target, task, port, model, flags):
-    """Run the setup script on the Windows box over ssh.
+def forward(target, port, address):
+    """Point the Windows port proxy at the distro's current address and open the port.
 
     :param target: the ssh destination, user@host or host
-    :param task: the scheduled task's name to create
-    :param port: the port the server should listen on
-    :param model: the model file's path on the Windows box
-    :param flags: the ninfer-serve flags that suit that card
+    :param port: the port to forward
+    :param address: the distro's address
     """
-    paste = base64.b64encode(install_script(task, port, model, flags).encode("utf-16-le")).decode()
-    return subprocess.run(
-        ["ssh", *SSH_OPTIONS, target, "powershell", "-NoProfile", "-EncodedCommand", paste],
-        capture_output=True,
-        text=True,
-    )
+    done = windows.run(target, FORWARD, {"WslAddress": address, "Port": port})
+    if done.returncode != 0:
+        raise SystemExit("could not forward the port:\n" + (done.stderr or done.stdout).strip())
+    for line in done.stdout.strip().splitlines():
+        print(f"  windows: {line.strip()}")
 
 
 def wait_for(base_url, seconds):
@@ -161,9 +130,10 @@ def link(base_url, model_ids):
         "baseUrl": base_url,
         "api": "openai-completions",
         "apiKey": PROVIDER,
-        # ninfer is not OpenAI: it has no developer role and no reasoning_effort knob.
+        # ninfer is not OpenAI: it has no developer role and no reasoning_effort knob. It does think,
+        # and answers with a reasoning_content of its own, which pi reads once the model says so.
         "compat": {"supportsDeveloperRole": False, "supportsReasoningEffort": False},
-        "models": [{"id": model_id} for model_id in model_ids],
+        "models": [{"id": model_id, "reasoning": True} for model_id in model_ids],
     }
     providers = config.setdefault("providers", {})
     if providers.get(PROVIDER) == wanted:
@@ -179,77 +149,55 @@ def ninfer(
     host: str = "blixt",
     port: int = 8080,
     user: str = "",
-    task: str = "ninfer",
     wait: int = 240,
+    root: str = "",
+    model: str = "",
+    flags: str = "",
     stop: bool = False,
     check: bool = False,
-    setup: bool = False,
-    model: str = "",
-    flags: str = DEFAULT_FLAGS,
 ) -> int:
-    """Start ninfer on the Windows box over the tailnet and make sure pi's models.json points at it.
+    """Start ninfer in the Windows box's WSL distro and make sure pi's models.json points at it.
 
-    Checks the tailnet, starts the remote scheduled task when the server is not already answering,
-    waits for the model to load, then writes the provider into pi's models.json if it is missing or
-    stale. Safe to rerun: a server that is already up is left alone. ``--setup --model <path>`` does
-    the one-time remote half first, over the ssh `ixd ssh setup` opened.
+    Checks the tailnet, starts the server when it is not already answering, refreshes the Windows
+    port proxy onto the distro's current address, waits for the weights to load, then writes the
+    provider into pi's models.json if it is missing or stale. Safe to rerun: a server that is
+    already up is left alone, and the proxy is repointed either way.
 
     :param host: the Windows box's tailnet name
     :param port: the port ninfer-serve listens on
     :param user: ssh user, when it differs from this machine's
-    :param task: the scheduled task's name on the Windows box
     :param wait: seconds to wait for the weights to load before giving up
-    :param stop: end the remote task instead, giving the GPU back
+    :param root: the ninfer checkout inside WSL, instead of the one ninfer-start.sh holds
+    :param model: the model file under that checkout, instead of the one ninfer-start.sh holds
+    :param flags: ninfer-serve flags, instead of the ones ninfer-start.sh holds
+    :param stop: stop the server instead, giving the GPU back
     :param check: report the state without starting anything
-    :param setup: write the launcher, register the task and open the port on the Windows box first
-    :param model: the model file's path on the Windows box, which --setup needs
-    :param flags: the ninfer-serve flags --setup writes into the launcher
     """
     base_url = f"http://{host}:{port}/v1"
     target = f"{user}@{host}" if user else host
     tailnet_ready(host)
-    if setup:
-        if not model:
-            raise SystemExit("--setup needs --model, the model file's path on the Windows box")
-        written = install(target, task, port, model, flags)
-        print((written.stdout or "").strip())
-        if written.returncode != 0:
-            raise SystemExit("the remote setup failed:\n" + (written.stderr or written.stdout).strip())
     if stop:
-        ended = task_command(target, "/end", task)
-        if ended.returncode != 0:
-            raise SystemExit("could not end the task:\n" + (ended.stderr or ended.stdout).strip())
-        print(f"  stopped: {task} on {host}, the card is free")
+        stopped = windows.wsl(target, STOP, {"NINFER_PORT": port})
+        if stopped.returncode != 0:
+            raise SystemExit("could not stop the server:\n" + (stopped.stderr or stopped.stdout).strip())
+        print(f"  {stopped.stdout.strip() or 'stopped'}, the card is free")
         return 0
     ids = advertised(base_url)
-    if ids is None and check:
-        print(f"  ninfer: down at {base_url}")
-        return 1
+    if check:
+        print(f"  ninfer: {'up at ' + base_url if ids else 'down at ' + base_url}")
+        if ids:
+            print(f"  serving {', '.join(ids)}")
+        return 0 if ids else 1
     if ids is None:
-        print(f"  ninfer: down at {base_url}, running the {task} task on {host}")
-        started = task_command(target, "/run", task)
-        if started.returncode != 0:
-            raise SystemExit(
-                "could not start the task:\n"
-                + (started.stderr or started.stdout).strip()
-                + f"\n\nthe box may not be set up yet: ixd ssh setup {host}, then"
-                + f" ixd ninfer --setup --model <path on {host}>"
-            )
+        print(f"  ninfer: nothing answering {base_url}, starting it in WSL")
+        forward(target, port, start(target, port, root, model, flags))
         ids = wait_for(base_url, wait)
         if ids is None:
-            raise SystemExit(f"the task started but nothing answered {base_url} within {wait}s")
+            raise SystemExit(
+                f"the server started but nothing answered {base_url} within {wait}s;"
+                f" its log is /tmp/ninfer.log inside WSL on {host}"
+            )
     print(f"  ninfer: up at {base_url}, serving {', '.join(ids)}")
-    if check:
-        linked = (
-            MODELS_FILE.exists()
-            and json.loads(MODELS_FILE.read_text(encoding="utf-8") or "{}")
-            .get("providers", {})
-            .get(PROVIDER, {})
-            .get("baseUrl")
-            == base_url
-        )
-        print(f"  pi: {'linked' if linked else 'not linked'} ({MODELS_FILE})")
-        return 0
     if link(base_url, ids):
         print(f"  pi: wrote the {PROVIDER} provider to {MODELS_FILE}")
     else:

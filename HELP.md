@@ -13,8 +13,8 @@ positional arguments:
               docstrings.
     land      Merge a worktree's change into the main branch and clean up
               after it.
-    ninfer    Start ninfer on the Windows box over the tailnet and make sure
-              pi's models.json points at it.
+    ninfer    Start ninfer in the Windows box's WSL distro and make sure pi's
+              models.json points at it.
     setup     Clone the repositories, install the commands, record REPO_HOME,
               install the autofix artifact.
     ssh       setup
@@ -84,30 +84,30 @@ options:
 ```
 ## ixd ninfer
 ```
-usage: ixd ninfer [-h] [--host HOST] [--port PORT] [--user USER] [--task TASK]
-                  [--wait WAIT] [--stop] [--check] [--setup] [--model MODEL]
-                  [--flags FLAGS]
+usage: ixd ninfer [-h] [--host HOST] [--port PORT] [--user USER] [--wait WAIT]
+                  [--root ROOT] [--model MODEL] [--flags FLAGS] [--stop]
+                  [--check]
 
-Start ninfer on the Windows box over the tailnet and make sure pi's models.json points at it.
+Start ninfer in the Windows box's WSL distro and make sure pi's models.json points at it.
 
-Checks the tailnet, starts the remote scheduled task when the server is not already answering,
-waits for the model to load, then writes the provider into pi's models.json if it is missing or
-stale. Safe to rerun: a server that is already up is left alone. ``--setup --model <path>`` does
-the one-time remote half first, over the ssh `ixd ssh setup` opened.
+Checks the tailnet, starts the server when it is not already answering, refreshes the Windows
+port proxy onto the distro's current address, waits for the weights to load, then writes the
+provider into pi's models.json if it is missing or stale. Safe to rerun: a server that is
+already up is left alone, and the proxy is repointed either way.
 
 options:
   -h, --help     show this help message and exit
   --host HOST    the Windows box's tailnet name
   --port PORT    the port ninfer-serve listens on
   --user USER    ssh user, when it differs from this machine's
-  --task TASK    the scheduled task's name on the Windows box
   --wait WAIT    seconds to wait for the weights to load before giving up
-  --stop         end the remote task instead, giving the GPU back
+  --root ROOT    the ninfer checkout inside WSL, instead of the one ninfer-
+                 start.sh holds
+  --model MODEL  the model file under that checkout, instead of the one
+                 ninfer-start.sh holds
+  --flags FLAGS  ninfer-serve flags, instead of the ones ninfer-start.sh holds
+  --stop         stop the server instead, giving the GPU back
   --check        report the state without starting anything
-  --setup        write the launcher, register the task and open the port on
-                 the Windows box first
-  --model MODEL  the model file's path on the Windows box, which --setup needs
-  --flags FLAGS  the ninfer-serve flags --setup writes into the launcher
 ```
 ## ixd setup
 ```
@@ -139,8 +139,8 @@ ssh: setup
 
 positional arguments:
   subcommand
-    setup     Generate the Windows-side OpenSSH setup as a script, send it to
-              the peer, and test the result.
+    setup     Send the Windows-side OpenSSH setup script to a peer, keyed to
+              this machine, and test it.
 
 options:
   -h, --help  show this help message and exit
@@ -151,13 +151,14 @@ usage: ixd ssh setup [-h] [--user USER] [--key KEY] [--out OUT] [--encoded]
                      [--force]
                      [host]
 
-Generate the Windows-side OpenSSH setup as a script, send it to the peer, and test the result.
+Send the Windows-side OpenSSH setup script to a peer, keyed to this machine, and test it.
 
-Tries the connection first: when it already works there is nothing to generate. Otherwise this
-machine's public key is read (a missing ed25519 pair is created), a rerunnable PowerShell script
-is written with that key in it, and Taildrop carries it over. The script installs the server,
-authorises the key in whichever file that account's sshd actually reads, and narrows port 22 to
-the tailnet. Only running it stays manual, since nothing can reach the box until it has.
+Tries the connection first: when it already works there is nothing to send. Otherwise this
+machine's public key is read (a missing ed25519 pair is created), ssh-setup.ps1 is written out
+with a call that passes it that key, and Taildrop carries it over. The script installs the
+server, authorises the key in whichever file that account's sshd actually reads, and narrows
+port 22 to the tailnet. Only running it stays manual, since nothing can reach the box until it
+has.
 
 positional arguments:
   host         the peer's tailnet name
@@ -170,7 +171,7 @@ options:
   --out OUT    where to write the script, instead of the cache directory
   --encoded    print a one-line paste that carries the script instead of
                sending a file
-  --force      generate it even when the connection already works
+  --force      send it even when the connection already works
 ```
 ## ixd stats
 ```
