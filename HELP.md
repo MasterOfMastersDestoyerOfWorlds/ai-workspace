@@ -13,12 +13,15 @@ positional arguments:
               docstrings.
     land      Merge a worktree's change into the main branch and clean up
               after it.
+    ninfer    Start ninfer on the Windows box over the tailnet and make sure
+              pi's models.json points at it.
     setup     Clone the repositories, install the commands, record REPO_HOME,
               install the autofix artifact.
+    ssh       setup
     stats     Print wall time by activity, thinking pauses, slow calls, errors
               and repeated command shapes.
-    wt        abort, commit, continue, done, launch-add, launch-list, new,
-              status, sync
+    wt        abort, archive, commit, continue, done, launch-add, launch-list,
+              new, status, sync
 
 options:
   -h, --help  show this help message and exit
@@ -52,6 +55,10 @@ verification aids rather than part of the change. Squash the diff into one commi
 the main checkout. Remove the worktree and its branch. Mark the branch's ticket DONE, which
 happens after the removal so the ticket CLI's unmerged-worktree guard sees the landed state.
 
+A sync that stopped on conflicts is finished here when the markers are gone, so resolving the
+files and running this one command is the whole recovery; it refuses, naming the files, while
+any marker remains.
+
 The main checkout is then recompiled: the VS Code Java extension does not notice files git
 changed underneath it, so the next F5 would otherwise run pre-merge classes and answer HTTP 404
 for routes that now exist.
@@ -75,6 +82,33 @@ options:
   --no-mark             leave the ticket's status alone instead of marking it
                         DONE
 ```
+## ixd ninfer
+```
+usage: ixd ninfer [-h] [--host HOST] [--port PORT] [--user USER] [--task TASK]
+                  [--wait WAIT] [--stop] [--check] [--setup] [--model MODEL]
+                  [--flags FLAGS]
+
+Start ninfer on the Windows box over the tailnet and make sure pi's models.json points at it.
+
+Checks the tailnet, starts the remote scheduled task when the server is not already answering,
+waits for the model to load, then writes the provider into pi's models.json if it is missing or
+stale. Safe to rerun: a server that is already up is left alone. ``--setup --model <path>`` does
+the one-time remote half first, over the ssh `ixd ssh setup` opened.
+
+options:
+  -h, --help     show this help message and exit
+  --host HOST    the Windows box's tailnet name
+  --port PORT    the port ninfer-serve listens on
+  --user USER    ssh user, when it differs from this machine's
+  --task TASK    the scheduled task's name on the Windows box
+  --wait WAIT    seconds to wait for the weights to load before giving up
+  --stop         end the remote task instead, giving the GPU back
+  --check        report the state without starting anything
+  --setup        write the launcher, register the task and open the port on
+                 the Windows box first
+  --model MODEL  the model file's path on the Windows box, which --setup needs
+  --flags FLAGS  the ninfer-serve flags --setup writes into the launcher
+```
 ## ixd setup
 ```
 usage: ixd setup [-h] [--repo-home REPO_HOME] [--dry-run] [--no-shell]
@@ -96,6 +130,47 @@ options:
   --no-tools            skip installing the commands and syncing the
                         environment
   --no-maven            skip installing the autofix artifact into ~/.m2
+```
+## ixd ssh
+```
+usage: ixd ssh [-h] subcommand ...
+
+ssh: setup
+
+positional arguments:
+  subcommand
+    setup     Generate the Windows-side OpenSSH setup as a script, send it to
+              the peer, and test the result.
+
+options:
+  -h, --help  show this help message and exit
+```
+### ixd ssh setup
+```
+usage: ixd ssh setup [-h] [--user USER] [--key KEY] [--out OUT] [--encoded]
+                     [--force]
+                     [host]
+
+Generate the Windows-side OpenSSH setup as a script, send it to the peer, and test the result.
+
+Tries the connection first: when it already works there is nothing to generate. Otherwise this
+machine's public key is read (a missing ed25519 pair is created), a rerunnable PowerShell script
+is written with that key in it, and Taildrop carries it over. The script installs the server,
+authorises the key in whichever file that account's sshd actually reads, and narrows port 22 to
+the tailnet. Only running it stays manual, since nothing can reach the box until it has.
+
+positional arguments:
+  host         the peer's tailnet name
+
+options:
+  -h, --help   show this help message and exit
+  --user USER  ssh user, when it differs from this machine's
+  --key KEY    private key to authorise, when it is not the default ed25519
+               one
+  --out OUT    where to write the script, instead of the cache directory
+  --encoded    print a one-line paste that carries the script instead of
+               sending a file
+  --force      generate it even when the connection already works
 ```
 ## ixd stats
 ```
@@ -124,12 +199,15 @@ options:
 ```
 usage: ixd wt [-h] subcommand ...
 
-wt: abort, commit, continue, done, launch-add, launch-list, new, status, sync
+wt: abort, archive, commit, continue, done, launch-add, launch-list, new,
+status, sync
 
 positional arguments:
   subcommand
     abort      Abandon an interrupted sync and restore the state the worktree
                was in before it.
+    archive    Commit a worktree's change, tag it archive/<name>, remove the
+               worktree, mark the ticket ARCHIVED.
     commit     Make one squashed commit of the whole diff on top of the main
                branch.
     continue   After the conflict markers are gone, finish the interrupted
@@ -164,6 +242,41 @@ positional arguments:
 
 options:
   -h, --help     show this help message and exit
+```
+### ixd wt archive
+```
+usage: ixd wt archive [-h] -r REASON [-m MESSAGE] [--keep-worktree]
+                      [--no-mark]
+                      [worktree_name]
+
+Commit a worktree's change, tag it archive/<name>, remove the worktree, mark the ticket ARCHIVED.
+
+For an experiment that is not going to land: the work stays reachable as one commit on the
+tag, with the reason in the tag message and on the ticket, and nothing of it reaches the main
+branch. The diff is committed where it sits, on whatever main-branch commit the worktree was
+last synced to; there is no rebase, because replaying dead work onto today's main branch is
+conflict resolution for nothing. The launch.json entries stay in the commit as part of the
+record.
+
+Refuses when the branch has nothing to archive (no diff and no commits of its own) or when the
+tag already exists. Recover the work later with ``git worktree add <path> archive/<name>``.
+
+positional arguments:
+  worktree_name         worktree path or bare name, defaulting to the one
+                        holding the current directory
+
+options:
+  -h, --help            show this help message and exit
+  -r REASON, --reason REASON
+                        why the work is being shelved rather than landed; goes
+                        on the tag and the ticket
+  -m MESSAGE, --message MESSAGE
+                        override the commit subject, instead of ``<TICKET>:
+                        <title> (archived)``
+  --keep-worktree       tag and mark, but leave the worktree and branch in
+                        place
+  --no-mark             leave the ticket's status alone instead of marking it
+                        ARCHIVED
 ```
 ### ixd wt commit
 ```
@@ -201,12 +314,14 @@ options:
 ```
 ### ixd wt done
 ```
-usage: ixd wt done [-h] [--skip-launch] [worktree_name]
+usage: ixd wt done [-h] [worktree_name]
 
 Sync, build, run the launch entry, check tmp/ holds a screenshot, then mark the ticket REVIEW.
 
 Every step must pass. A failure stops with the reason and nothing is marked, because a ticket in
-REVIEW is a claim that the user can verify the work with F5.
+REVIEW is a claim that the user can verify the work with F5. The launch entry is run exactly as
+F5 runs it, only headless, so a crash on that path is caught here and never at the user's
+keyboard; there is no way to skip it.
 
 positional arguments:
   worktree_name  worktree path or bare name, defaulting to the one holding the
@@ -214,8 +329,6 @@ positional arguments:
 
 options:
   -h, --help     show this help message and exit
-  --skip-launch  do not run the launch entry, though the screenshot check
-                 still applies
 ```
 ### ixd wt launch-add
 ```

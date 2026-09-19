@@ -4,9 +4,7 @@ FOR THE USER ONLY. Every spelling of this command is on the Claude permission de
 ``ixd wt``, which never touches the main branch.
 """
 
-import shutil
 import subprocess
-from pathlib import Path
 from typing import Annotated, Literal
 
 from ... import worktree
@@ -35,6 +33,10 @@ def land(
     the main checkout. Remove the worktree and its branch. Mark the branch's ticket DONE, which
     happens after the removal so the ticket CLI's unmerged-worktree guard sees the landed state.
 
+    A sync that stopped on conflicts is finished here when the markers are gone, so resolving the
+    files and running this one command is the whole recovery; it refuses, naming the files, while
+    any marker remains.
+
     The main checkout is then recompiled: the VS Code Java extension does not notice files git
     changed underneath it, so the next F5 would otherwise run pre-merge classes and answer HTTP 404
     for routes that now exist.
@@ -47,14 +49,15 @@ def land(
     :param no_build: skip recompiling the main checkout after the merge
     :param no_mark: leave the ticket's status alone instead of marking it DONE
     """
-    path, branch, main_branch = worktree.resolve_worktree(worktree_name)
+    path, branch, main_branch = worktree.resolve_worktree(worktree_name, allow_rebase=True)
     subject = message.strip() or default_message(branch, body)
     print(f"== landing {branch} as: {subject.splitlines()[0]}")
-    main_checkout = main_checkout_of(path)
+    main_checkout = worktree.main_checkout_of(path)
     head = worktree.git(main_checkout, "symbolic-ref", "--quiet", "--short", "HEAD", check=False)
     if head != main_branch:
         raise SystemExit(f"main checkout {main_checkout} is on {head!r}, not {main_branch!r}; refusing")
 
+    finish_interrupted_sync(path, branch, main_branch)
     print(f"== sync {branch} onto {main_branch}")
     worktree.sync(path, branch, main_branch)
 
@@ -86,7 +89,7 @@ def land(
         print(f"== remove worktree {path} and branch {branch}")
         worktree.git(main_checkout, "worktree", "remove", "--force", str(path))
         worktree.git(main_checkout, "branch", "-d", branch)
-        remove_leftovers(path)
+        worktree.remove_leftovers(path)
 
     if not no_mark:
         mark_ticket_done(branch)
@@ -94,6 +97,29 @@ def land(
         rebuild_main_checkout(main_checkout)
     print("done")
     return 0
+
+
+def finish_interrupted_sync(path, branch, main_branch):
+    """Complete a sync that stopped on conflicts, once the working tree no longer holds markers.
+
+    This is `ixd wt continue` run on the user's behalf: the resolved files are staged, the rebase
+    step is committed, and the change is unpacked as an uncommitted diff again, so the land can go
+    on as if the sync had never stopped. Markers still present are a refusal, not a prompt.
+
+    :param path: the worktree directory
+    :param branch: its branch
+    :param main_branch: the branch being landed onto
+    """
+    if not worktree.rebase_in_progress(path):
+        return
+    markers = worktree.conflict_markers(path)
+    if markers:
+        raise SystemExit(
+            f"{branch}: a sync is in progress and conflict markers remain in:\n{markers}\n"
+            f"resolve them and run land again, or run `ixd wt abort {branch}` to drop the sync"
+        )
+    print(f"== finishing the interrupted sync of {branch} (conflicts resolved)")
+    worktree.continue_rebase(path, branch, main_branch)
 
 
 def default_message(branch, body):
@@ -114,19 +140,6 @@ def default_message(branch, body):
     return subject
 
 
-def main_checkout_of(path):
-    """The repository's main checkout, read from the worktree listing.
-
-    :param path: any worktree of the repository
-    :return: the directory holding the shared .git
-    """
-    listing = worktree.git(path, "worktree", "list", "--porcelain")
-    first = listing.splitlines()[0]
-    if not first.startswith("worktree "):
-        raise SystemExit("cannot read the main checkout from git worktree list")
-    return Path(first[len("worktree ") :]).resolve()
-
-
 def require_already_merged(main_checkout, branch, main_branch):
     """Refuse to clean up a branch with nothing to land unless the main branch already holds it.
 
@@ -144,28 +157,6 @@ def require_already_merged(main_checkout, branch, main_branch):
     print(f"== {branch} already merged into {main_branch}; cleaning up only")
 
 
-def remove_leftovers(path):
-    """Delete what git left behind when the worktree directory survived its removal.
-
-    The VS Code Java extension keeps writing into an open worktree (``bin/``, ``target-ide/``,
-    ``.project``), so ``git worktree remove`` deletes the tracked files and the directory stays.
-    Anything still holding a ``.git`` entry is a live worktree and is left alone.
-
-    :param path: the worktree directory git was asked to remove
-    """
-    if not path.is_dir():
-        return
-    if (path / ".git").exists():
-        print(f"== {path} still has a .git entry; left in place")
-        return
-    leftovers = sorted(entry.name for entry in path.iterdir())
-    shutil.rmtree(path, ignore_errors=True)
-    if path.is_dir():
-        print(f"== could not remove {path}; close the editor holding it and delete it by hand")
-        return
-    print(f"== removed the leftover directory ({', '.join(leftovers)})")
-
-
 def mark_ticket_done(branch):
     """Mark the branch's ticket DONE, now that its change is on the main branch.
 
@@ -178,19 +169,7 @@ def mark_ticket_done(branch):
     if not ticket:
         print(f"== ticket: no {branch.upper()} in {TICKET_REPO}; nothing to mark")
         return
-    result = subprocess.run(
-        ["uv", "run", "python", "generate_board.py", "mark", "done", ticket["id"]],
-        cwd=str(TICKET_REPO),
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        print(
-            f"== ticket: {ticket['id']} not marked (the merge itself is done):\n"
-            + (result.stderr or result.stdout).strip()[-1000:]
-        )
-        return
-    print(result.stdout.strip())
+    worktree.ticket_command("mark", "done", ticket["id"], after="the merge itself is done")
 
 
 def rebuild_main_checkout(main_checkout):

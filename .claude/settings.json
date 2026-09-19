@@ -48,6 +48,8 @@
       "Bash(*commands/land*)",
       "Bash(ixd land)",
       "Bash(ixd land *)",
+      "Bash(*wt archive*)",
+      "Bash(*commands/wt/archive*)",
       "Bash(git add*)",
       "Bash(git -* add*)",
       "Bash(git am*)",

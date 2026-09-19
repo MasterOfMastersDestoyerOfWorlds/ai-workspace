@@ -9,15 +9,15 @@ from ...registry import CliOption, cli_command
 @cli_command
 def done(
     worktree_name: Annotated[str, CliOption(positional=True)] = "",
-    skip_launch: bool = False,
 ) -> int:
     """Sync, build, run the launch entry, check tmp/ holds a screenshot, then mark the ticket REVIEW.
 
     Every step must pass. A failure stops with the reason and nothing is marked, because a ticket in
-    REVIEW is a claim that the user can verify the work with F5.
+    REVIEW is a claim that the user can verify the work with F5. The launch entry is run exactly as
+    F5 runs it, only headless, so a crash on that path is caught here and never at the user's
+    keyboard; there is no way to skip it.
 
     :param worktree_name: worktree path or bare name, defaulting to the one holding the current directory
-    :param skip_launch: do not run the launch entry, though the screenshot check still applies
     """
     path, branch, main_branch = worktree.resolve_worktree(worktree_name)
     print(f"== done {branch}: sync, build, run the launch entry, check screenshots, mark REVIEW")
@@ -25,12 +25,9 @@ def done(
     build(path)
     entry = require_launch_entry(path, branch)
     print(f"== launch entry: {entry.get('name')} (scene {entry.get('args')})")
-    if skip_launch:
-        print("== launch run SKIPPED by request; the entry was not executed this run")
-    else:
-        shot = path / "tmp" / f"{branch}-launch.png"
-        shot.parent.mkdir(parents=True, exist_ok=True)
-        worktree.run_step("launch run", worktree.launch_command(path, entry, shot), path)
+    shot = path / "tmp" / f"{branch}-launch.png"
+    shot.parent.mkdir(parents=True, exist_ok=True)
+    worktree.run_step("launch run", worktree.launch_command(path, entry, shot), path)
     require_screenshot(path, branch)
     mark_review(branch)
     return 0

@@ -33,11 +33,16 @@ CODE_ROOT = repo_home()
 TICKET_REPO = CODE_ROOT / "ixdar-tickets"
 TRANSCRIPT_ROOT = Path.home() / ".claude" / "projects"
 WORKTREE_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+# The same vmArgs the hand-written entries in Ixdar's launch.json carry, profiler agent first, so an
+# agent's entry runs exactly like the user's own; `ixd wt new` links the profiler the token needs.
 LAUNCH_VM_ARGS = (
-    "-enableassertions -Dsun.awt.noerasebackground=true "
-    "-Dorg.lwjgl.util.DebugLoader=true -XX:ErrorFile=target/hs_err_pid%p.log"
+    "${config:java.profiler.args} -XX:ErrorFile=target/hs_err_pid%p.log -enableassertions "
+    "-XX:+IgnoreUnrecognizedVMOptions -XstartOnFirstThread "
+    "-Dsun.awt.noerasebackground=true -Dorg.lwjgl.util.DebugLoader=true"
 )
 LAUNCH_MAIN_CLASS = "ixdar.canvas.IxdarWindow"
+# Ixdar's own script that points .profiler/libasyncProfiler at the installed async-profiler.
+PROFILER_LINK_SCRIPT = "tools/link-profiler.sh"
 SCREENSHOT_SUFFIXES = (".png", ".jpg", ".jpeg")
 MIN_TRANSCRIPT_AGE = 120
 # Fewer tool calls into a worktree than this is incidental: one `wt status` reaches that far.
@@ -361,6 +366,67 @@ def ticket_for(branch):
         return None
 
 
+def ticket_command(*arguments, after):
+    """Run one ticket-store command, warning rather than failing when it does not go through.
+
+    Used after an irreversible git step (a merge, a tag and removal), where stopping would leave a
+    worse state than an unmarked ticket.
+
+    :param arguments: the ``generate_board.py`` arguments, such as ``mark done PATCH-1``
+    :param after: what has already happened, named in the warning
+    :return: whether the command succeeded
+    """
+    result = subprocess.run(
+        ["uv", "run", "python", "generate_board.py", *arguments],
+        cwd=str(TICKET_REPO),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(
+            f"== ticket: `{' '.join(arguments[:2])}` failed ({after}):\n"
+            + (result.stderr or result.stdout).strip()[-1000:]
+        )
+        return False
+    print(result.stdout.strip())
+    return True
+
+
+def main_checkout_of(worktree):
+    """The repository's main checkout, read from the worktree listing.
+
+    :param worktree: any worktree of the repository
+    :return: the directory holding the shared .git
+    """
+    listing = git(worktree, "worktree", "list", "--porcelain")
+    first = listing.splitlines()[0]
+    if not first.startswith("worktree "):
+        raise SystemExit("cannot read the main checkout from git worktree list")
+    return Path(first[len("worktree ") :]).resolve()
+
+
+def remove_leftovers(worktree):
+    """Delete what git left behind when the worktree directory survived its removal.
+
+    The VS Code Java extension keeps writing into an open worktree (``bin/``, ``target-ide/``,
+    ``.project``), so ``git worktree remove`` deletes the tracked files and the directory stays.
+    Anything still holding a ``.git`` entry is a live worktree and is left alone.
+
+    :param worktree: the worktree directory git was asked to remove
+    """
+    if not worktree.is_dir():
+        return
+    if (worktree / ".git").exists():
+        print(f"== {worktree} still has a .git entry; left in place")
+        return
+    leftovers = sorted(entry.name for entry in worktree.iterdir())
+    shutil.rmtree(worktree, ignore_errors=True)
+    if worktree.is_dir():
+        print(f"== could not remove {worktree}; close the editor holding it and delete it by hand")
+        return
+    print(f"== removed the leftover directory ({', '.join(leftovers)})")
+
+
 def ticket_path_for(branch):
     """Path of the ticket JSON named like the branch, under the live ticket store, or None."""
     ticket_id = branch.upper()
@@ -524,7 +590,9 @@ def entry_properties(entry):
 
 
 def seed_environment(worktree):
-    """Create the worktree's Python virtualenv so the first ixdar-cli call is not a cold install."""
+    """Create the worktree's Python virtualenv and link the profiler, so the first ixdar-cli call is
+    not a cold install and a launch entry carrying the profiler agent can start."""
+    link_profiler(worktree)
     if not (worktree / "pyproject.toml").exists():
         return
     if not shutil.which("uv"):
@@ -538,6 +606,27 @@ def seed_environment(worktree):
         print(f"seed:     uv sync failed ({reason}); run it yourself before the first ixdar-cli call")
     else:
         print(f"seed:     uv sync done in {seconds:.0f}s")
+
+
+def link_profiler(worktree):
+    """Run the repository's profiler link script, when it has one.
+
+    Ixdar's launch entries load async-profiler from the gitignored ``.profiler/libasyncProfiler``
+    symlink, and ``-agentpath`` is fatal when that file is missing, so a fresh worktree cannot start
+    most scenes until the link exists. The script is the repository's own definition of where the
+    library lives on each platform, so it is run rather than duplicated here.
+
+    :param worktree: the worktree directory
+    """
+    script = worktree / PROFILER_LINK_SCRIPT
+    if not script.exists():
+        return
+    result = subprocess.run([str(script)], cwd=str(worktree), capture_output=True, text=True)
+    if result.returncode != 0:
+        reason = (result.stderr.strip().splitlines() or ["no output"])[-1]
+        print(f"seed:     profiler link failed ({reason}); launch entries with the profiler will not start")
+    else:
+        print(f"seed:     {result.stdout.strip() or 'profiler linked'}")
 
 
 def brief_text(worktree, branch, main_branch):
@@ -707,8 +796,13 @@ def continue_rebase(worktree, branch, main_branch):
     markers = conflict_markers(worktree)
     if markers:
         raise SystemExit(f"{branch}: conflict markers remain in:\n" + markers)
+    deleted_on_one_side = {
+        line[3:]
+        for line in git(worktree, "status", "--porcelain", check=False).splitlines()
+        if line[:2] in ("DU", "UD")
+    }
     for path in unresolved:
-        if not (worktree / path).exists():
+        if not (worktree / path).exists() and path not in deleted_on_one_side:
             raise SystemExit(
                 f"{branch}: {path} is unresolved and missing from the working tree; "
                 f"recreate it or run `abort`"

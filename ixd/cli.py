@@ -42,7 +42,9 @@ def add_argument(parser: argparse.ArgumentParser, parameter: CliParameter) -> No
     elif parameter.multiple:
         options["action"] = "append"
         options["type"] = parameter.annotation
-        options["default"] = parameter.default if parameter.has_default else []
+        # argparse's append action mutates the default in place, so it must be a fresh list
+        # rather than the tuple the signature declares.
+        options["default"] = list(parameter.default or ()) if parameter.has_default else []
     else:
         options["type"] = parameter.annotation
         if parameter.has_default:

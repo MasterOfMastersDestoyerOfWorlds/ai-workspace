@@ -1,0 +1,1 @@
+"""The `ninfer` command."""

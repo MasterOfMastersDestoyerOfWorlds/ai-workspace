@@ -78,7 +78,11 @@ failed step); `commit -m` makes one squashed commit on top of master (only after
 leave their work uncommitted; they run `sync` when they need newer master. The
 user alone merges to master, with `ixd land <name>` (sync, strip launch.json entries, squash-commit
 with the ticket title as message, fast-forward master, remove the worktree and branch, mark the
-ticket DONE). `land` is on the deny list in every spelling; never run it or suggest a way around it. Those launch entries are verification aids the user strips
+ticket DONE), or closes it without merging with `ixd wt archive <name> --reason "..."` (commit the
+diff where it sits, tag it `archive/<name>` with the reason, remove the worktree and branch, mark
+the ticket ARCHIVED; `git worktree add <path> archive/<name>` brings it back). `land` and
+`wt archive` are on the deny list in every spelling; never run them or suggest a way around them.
+Those launch entries are verification aids the user strips
 before merging. Do not create `VERIFICATION.md` files; put verification results in the agent's
 final report and on the ticket.
 
@@ -95,7 +99,8 @@ nested `Ixdar/ixdar-tickets` submodule is dead; do not use it.
 - `create` and `update` support `--blocked-by` / `--blocks` (reciprocal), `--unknown`,
   `--related-file`, repeatable `--subsystem`, and `--add-changes`.
 - Check the VIEW, PATCH, MESH and VOYAGE epics for overlap before creating mesh or viewer tickets.
-- States: TODO, IN_PROGRESS, REVIEW, DONE, PINNED. When an agent's work is verified and waiting
+- States: TODO, IN_PROGRESS, REVIEW, DONE, PINNED, ARCHIVED (closed without landing, by
+  `ixd wt archive`; the ticket files under `done/` next to DONE). When an agent's work is verified and waiting
   for the user to `land` it, mark the ticket REVIEW (`mark review ID`); DONE only after it is on
   master and every definition-of-done item holds.
 
