@@ -35,6 +35,11 @@ def stats(
         totals.update(by_category)
         counts.update(per_category)
     if len(paths) > 1:
+        print("\n=== context per transcript (relaunch an agent past 200k):")
+        for path in paths:
+            latest, peak = transcripts.context_tokens(path)
+            flag = "  <- relaunch" if latest > 200_000 else ""
+            print(f"  {latest // 1000:5d}k now {peak // 1000:5d}k peak  {path.name}{flag}")
         print("\n=== all transcripts, wall time by activity:")
         for category, span in totals.most_common():
             print(f"  {span / 60:6.1f} min  {counts[category]:4d} calls  {category}")

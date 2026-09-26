@@ -14,8 +14,8 @@ file.
 - `$REPO_HOME/ai-workspace` — this repo. `.claude/settings.json` (permissions, the deny list),
   `.claude/skills/`, `hooks/`, `ixd/` (the CLI: every command is a decorated function at
   `ixd/commands/<command>/<subcommand>.py`, and `README.md` plus `HELP.md` are generated from those
-  docstrings by `ixd docs`; the shared engines are `worktree.py`, `machine.py`, `transcripts.py`
-  and `paths.py`), `repos.json` and `reports/`. `ixd` is the only executable: `ixd wt`, `ixd land`,
+  docstrings by `ixd docs`; the shared engines are `worktree.py`, `diagnostics.py`, `machine.py`,
+  `transcripts.py` and `paths.py`), `repos.json` and `reports/`. `ixd` is the only executable: `ixd wt`, `ixd land`,
   `ixd setup`, `ixd stats`, `ixd docs`. The bare `wt`, `land` and `setup` names are gone. Run
   `ixd docs` after changing a docstring and `uv run black ixd hooks` after changing any Python here.
 - `$REPO_HOME/Ixdar` — the Java/Maven application (`annotations`, `ixdar-app`) plus the
@@ -39,6 +39,14 @@ Never move the session's working directory out of this checkout of ai-workspace.
 paths into the other repos. If a project needs a repo-local feature (worktrees, project settings),
 add or allow it in this repo's `.claude/settings.json` rather than relocating the session.
 
+## Reading files
+
+Read source files with the Read tool, not `cat` or `sed -n` ranges, even when the harness says to
+prefer Bash for reads: Read gives line numbers the next Edit anchors on, and one Read of the file
+replaces a run of `sed -n 'a,bp'` calls for the next range. This overrides that harness
+instruction for source, the same way the hooks override its preference for shell edits. Bash stays
+right for logs, searches (`grep`, `rg`) and command output.
+
 ## No tests in this repo
 
 **Scope: the files of this repo only.** This rule says nothing about Ixdar, ixdar-tickets or
@@ -60,6 +68,12 @@ Spawn Agent-tool subagents with `model: "opus"`. Parallel Fable subagents hit th
 rate limit and were killed mid-work. When relaunching an interrupted agent, tell it to inspect
 `git status` and `git diff` in its worktree first and continue from the partial state.
 
+Keep agent contexts under about 200k tokens: past that an agent slows and loses track of its own
+earlier findings. `ixd stats --session <id>` prints every agent's current and peak context. When
+one passes the line, stop it (TaskStop) and launch a fresh agent whose brief is the ticket plus
+`ixd wt status <ticket>`, the same as a crash relaunch, rather than resuming it with SendMessage,
+which carries the whole context along. Do the same for this coordinating session with `/compact`.
+
 For Ixdar tickets, agents work in `$REPO_HOME/Ixdar/.claude/worktrees/<ticket>` on a branch
 of the same name and add a `.vscode/launch.json` entry plus screenshots under `tmp/` so the user
 can verify with F5. Git inside a worktree goes through `ixd wt` (the bare `wt` is an alias;
@@ -69,21 +83,24 @@ path or a bare name such as `craw-27`, refuses the main checkout and the main br
 the worktree's uncommitted diff is the proposed change, sitting directly on top of master so
 `git diff` shows exactly what would land. The lifecycle is `wt new <ticket>` (create the worktree
 and branch, seed its environment, print the brief an agent needs), `wt status <ticket>` (branch,
-distance from master, changed files, and the last note of the agent that worked there — this is
-what a relaunch reads instead of a hand-written brief), `wt sync <ticket>` (rebase that diff onto
-the current master and leave it uncommitted again), `wt launch add <ticket> --scene <id>` (write
-the launch.json entry as JSONC, comments intact) and `wt done <ticket>` (sync, build, run the
-entry, check `tmp/` holds a screenshot, mark the ticket REVIEW, refusing with a reason on any
-failed step); `commit -m` makes one squashed commit on top of master (only after a sync). Agents
+distance from master, its published and archived refs, changed files, added diagnostics, and the
+last note of the agent that worked there — this is what a relaunch reads instead of a hand-written
+brief), `wt sync <ticket>` (rebase that diff onto the current master and leave it uncommitted
+again), `wt launch-add <ticket> --scene <id>` (write the launch.json entry as JSONC, comments
+intact) and `wt done <ticket>` (sync, refuse debugging scaffolding the ticket's definition of done
+does not name — log lines, public counters, describe/dump helpers, sample limits, `*Probe.java`
+files, found by `ixd/diagnostics.py` — build, run the entry, check `tmp/` holds a screenshot, mark
+the ticket REVIEW, refusing with a reason on any failed step); `commit -m` makes one squashed commit on top of master (only after a sync). Agents
 leave their work uncommitted; they run `sync` when they need newer master. The
-user alone merges to master, with `ixd land <name>` (sync, strip launch.json entries, squash-commit
-with the ticket title as message, fast-forward master, remove the worktree and branch, mark the
-ticket DONE), or closes it without merging with `ixd wt archive <name> --reason "..."` (commit the
+user alone merges to master, with `ixd land <name>` (sync, remove the launch.json entries named after a ticket while
+other launch.json changes land, squash-commit with the ticket title as message, fast-forward
+master, move a VS Code window showing the worktree back to the main checkout, remove the worktree
+and branch, mark the ticket DONE, rebuild), or closes it without merging with `ixd wt archive <name> --reason "..."` (commit the
 diff where it sits, tag it `archive/<name>` with the reason, remove the worktree and branch, mark
 the ticket ARCHIVED; `git worktree add <path> archive/<name>` brings it back). `land` and
 `wt archive` are on the deny list in every spelling; never run them or suggest a way around them.
-Those launch entries are verification aids the user strips
-before merging. Do not create `VERIFICATION.md` files; put verification results in the agent's
+Those launch entries are verification aids that `land` strips because `wt launch-add` names them
+`<TICKET-ID>: <scene>`; an entry a ticket means to keep (a new scene's) gets a plain name. Do not create `VERIFICATION.md` files; put verification results in the agent's
 final report and on the ticket.
 
 The `wt` docs an agent sees live in `Ixdar/CLAUDE.md` ("Worktrees and git"), which is the file a

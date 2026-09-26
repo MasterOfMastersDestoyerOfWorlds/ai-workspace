@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from ... import worktree
+from ... import diagnostics, worktree
 from ...registry import CliOption, cli_command
 
 
@@ -10,9 +10,11 @@ from ...registry import CliOption, cli_command
 def done(
     worktree_name: Annotated[str, CliOption(positional=True)] = "",
 ) -> int:
-    """Sync, build, run the launch entry, check tmp/ holds a screenshot, then mark the ticket REVIEW.
+    """Sync, refuse leftover diagnostics, build, run the launch entry, check tmp/, mark REVIEW.
 
-    Every step must pass. A failure stops with the reason and nothing is marked, because a ticket in
+    Log lines, public counters, describe/dump helpers, sample limits and ``*Probe.java`` files
+    the diff adds are refused unless the ticket's definition of done names them: strip them, or
+    name them there when they are meant to land. Every step must pass. A failure stops with the reason and nothing is marked, because a ticket in
     REVIEW is a claim that the user can verify the work with F5. The launch entry is run exactly as
     F5 runs it, only headless, so a crash on that path is caught here and never at the user's
     keyboard; there is no way to skip it.
@@ -22,6 +24,7 @@ def done(
     path, branch, main_branch = worktree.resolve_worktree(worktree_name)
     print(f"== done {branch}: sync, build, run the launch entry, check screenshots, mark REVIEW")
     worktree.sync(path, branch, main_branch)
+    require_no_leftover_diagnostics(path, branch)
     build(path)
     entry = require_launch_entry(path, branch)
     print(f"== launch entry: {entry.get('name')} (scene {entry.get('args')})")
@@ -31,6 +34,29 @@ def done(
     require_screenshot(path, branch)
     mark_review(branch)
     return 0
+
+
+def require_no_leftover_diagnostics(path, branch):
+    """Refuse when the diff adds debugging scaffolding the ticket's definition of done never names.
+
+    :param path: the worktree directory
+    :param branch: its branch, whose upper-cased name is the ticket id
+    """
+    ticket = worktree.ticket_for(branch) or {}
+    findings = diagnostics.scan(path)
+    left = diagnostics.unaccounted(findings, ticket.get("definition-of-done", ""))
+    if not left:
+        print(f"== diagnostics: {len(findings)} added, all named in the definition of done")
+        return
+    listing = "\n".join(f"  {finding.describe()}" for finding in left)
+    ticket_id = ticket.get("id", branch.upper())
+    raise SystemExit(
+        f"the diff adds {len(left)} diagnostic(s) the definition of done of {ticket_id} does not "
+        f"name; nothing marked.\n{listing}\nStrip each one (ask the running scene through an "
+        f"ixdar-cli probe instead of committing a log line), or, when it is meant to land, name "
+        f"it in the DoD: generate_board.py update {ticket_id} --append-definition-of-done "
+        f'"Keeps <identifier>: <why>."'
+    )
 
 
 def build(path):

@@ -111,11 +111,11 @@ uv run black ixd hooks
 | [`ixd wt archive`](#ixd-wt-archive) | Commit a worktree's change, tag it archive/<name>, remove the worktree, mark the ticket ARCHIVED. |
 | [`ixd wt commit`](#ixd-wt-commit) | Make one squashed commit of the whole diff on top of the main branch. |
 | [`ixd wt continue`](#ixd-wt-continue) | After the conflict markers are gone, finish the interrupted sync. |
-| [`ixd wt done`](#ixd-wt-done) | Sync, build, run the launch entry, check tmp/ holds a screenshot, then mark the ticket REVIEW. |
+| [`ixd wt done`](#ixd-wt-done) | Sync, refuse leftover diagnostics, build, run the launch entry, check tmp/, mark REVIEW. |
 | [`ixd wt launch-add`](#ixd-wt-launch-add) | Add one entry to the worktree's .vscode/launch.json, keeping the file's comments. |
 | [`ixd wt launch-list`](#ixd-wt-launch-list) | Print the launch entry names this worktree offers, with their scene arguments. |
 | [`ixd wt new`](#ixd-wt-new) | Create the worktree and branch off the main branch, seed it, and print the agent brief. |
-| [`ixd wt status`](#ixd-wt-status) | Show the branch, its distance from main, the changed files, and the last agent note. |
+| [`ixd wt status`](#ixd-wt-status) | Show the branch, its refs, the changed files, added diagnostics, and the last agent note. |
 | [`ixd wt sync`](#ixd-wt-sync) | Rebase the uncommitted change onto the main branch and leave it uncommitted again. |
 
 ## docs
@@ -147,10 +147,22 @@ ixd land [WORKTREE_NAME] [--message MESSAGE] [--body BODY] [--keep-launch] [--ke
 ```
 
 Six steps, each refusing to continue on failure. Replay the change onto the current main branch.
-Restore the main branch's .vscode/launch.json, because the entries an agent added are
-verification aids rather than part of the change. Squash the diff into one commit. Fast-forward
-the main checkout. Remove the worktree and its branch. Mark the branch's ticket DONE, which
-happens after the removal so the ticket CLI's unmerged-worktree guard sees the landed state.
+Remove every .vscode/launch.json entry named after a ticket (``PATCH-117: quad-layout``), the
+F5 verification aids ``wt launch-add`` writes, while other launch.json changes, such as a new
+scene's entry, land. Squash the diff into one commit. Fast-forward the main checkout. Remove
+the worktree and its branch. Mark the branch's ticket DONE, which happens after the removal so
+the ticket CLI's unmerged-worktree guard sees the landed state.
+
+Before the removal, a VS Code window that shows the worktree is switched to the main checkout
+with ``code -r``, so its Java extension stops writing into the directory being deleted; this
+waits until the very end when land itself runs in that window's terminal, which the switch
+would close. ``code -r`` is used only when it will reach that window (the only window, or the
+last active one); otherwise the output says which window to switch. Whatever the extension
+wrote back meanwhile is cleared once more after the rebuild.
+
+Run on a folder git no longer has a worktree for (already landed, but an editor kept writing
+into it, or the shell still sits in the deleted directory), it only finishes the cleanup:
+VS Code off it, folder deleted.
 
 A sync that stopped on conflicts is finished here when the markers are gone, so resolving the
 files and running this one command is the whole recovery; it refuses, naming the files, while
@@ -165,7 +177,7 @@ for routes that now exist.
 | WORKTREE_NAME | — | worktree path or bare name, defaulting to the one holding the current directory |
 | `-m`, `--message` | — | override the commit message entirely, instead of building it from the ticket |
 | `--body` `none` \| `changes` \| `description` | `none` | commit body: the subject alone, the ticket's changes-made bullets, or its description |
-| `--keep-launch` | off | keep the worktree's launch.json changes instead of restoring the main branch's |
+| `--keep-launch` | off | keep the ticket-named launch.json entries instead of removing them |
 | `--keep-worktree` | off | merge but leave the worktree and branch in place |
 | `--no-build` | off | skip recompiling the main checkout after the merge |
 | `--no-mark` | off | leave the ticket's status alone instead of marking it DONE |
@@ -339,13 +351,15 @@ listed as unmerged has vanished from the working tree.
 
 ### ixd wt done
 
-Sync, build, run the launch entry, check tmp/ holds a screenshot, then mark the ticket REVIEW.
+Sync, refuse leftover diagnostics, build, run the launch entry, check tmp/, mark REVIEW.
 
 ```
 ixd wt done [WORKTREE_NAME]
 ```
 
-Every step must pass. A failure stops with the reason and nothing is marked, because a ticket in
+Log lines, public counters, describe/dump helpers, sample limits and ``*Probe.java`` files
+the diff adds are refused unless the ticket's definition of done names them: strip them, or
+name them there when they are meant to land. Every step must pass. A failure stops with the reason and nothing is marked, because a ticket in
 REVIEW is a claim that the user can verify the work with F5. The launch entry is run exactly as
 F5 runs it, only headless, so a crash on that path is caught here and never at the user's
 keyboard; there is no way to skip it.
@@ -405,7 +419,7 @@ verbs, and what is denied.
 
 ### ixd wt status
 
-Show the branch, its distance from main, the changed files, and the last agent note.
+Show the branch, its refs, the changed files, added diagnostics, and the last agent note.
 
 ```
 ixd wt status [WORKTREE_NAME]
@@ -413,7 +427,10 @@ ixd wt status [WORKTREE_NAME]
 
 This is what a relaunched agent reads instead of a hand-written brief. The note is the closing
 prose of the transcript whose tool calls actually worked in this worktree, so an agent picking
-the work up learns what was built and what was left.
+the work up learns what was built and what was left. Refs are the published and archived
+copies of the branch (``origin/<branch>``, ``archive/<branch>``), so nobody reaches for the
+denied ``git branch`` or ``git tag`` to find them. Diagnostics are the log lines, counters and
+probes ``wt done`` refuses unless the ticket's definition of done names them.
 
 | argument | default | meaning |
 | --- | --- | --- |

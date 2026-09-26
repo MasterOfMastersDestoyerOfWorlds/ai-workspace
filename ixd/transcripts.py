@@ -83,6 +83,33 @@ def shape(command):
     return re.sub(r"\s+", " ", s).strip()[:140]
 
 
+def context_tokens(path):
+    """(latest, peak) context size in tokens, read from the usage of each assistant message.
+
+    The context an agent carries is its whole prompt: fresh input plus what the cache wrote and
+    read. Past about 200k tokens an agent slows and forgets, which is the point to stop it and
+    relaunch it fresh from ``ixd wt status``.
+
+    :param path: transcript to read
+    :return: the last and the largest prompt size, 0 when the transcript has no usage
+    """
+    latest = peak = 0
+    for line in open(path, encoding="utf-8"):
+        if '"usage"' not in line:
+            continue
+        try:
+            usage = (json.loads(line).get("message") or {}).get("usage") or {}
+        except ValueError:
+            continue
+        size = sum(
+            usage.get(key) or 0
+            for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+        )
+        if size:
+            latest, peak = size, max(peak, size)
+    return latest, peak
+
+
 def summarise(path, calls, top, idle):
     stamps = [c[0] for c in calls if c[0]] + [c[4] for c in calls if c[4]]
     if not stamps:
@@ -94,6 +121,9 @@ def summarise(path, calls, top, idle):
         f"wall {wall}  tool calls {len(calls)}  "
         + "  ".join(f"{n} {k}" for k, n in collections.Counter(c[1] for c in calls).most_common())
     )
+    latest, peak = context_tokens(path)
+    warning = "  (past 200k: stop and relaunch fresh from `ixd wt status`)" if latest > 200_000 else ""
+    print(f"context {latest // 1000}k tokens now, {peak // 1000}k peak{warning}")
 
     def describe(name, inp):
         text = inp.get("command") if name == "Bash" else (inp.get("file_path") or inp.get("pattern") or "")

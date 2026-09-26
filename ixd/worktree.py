@@ -33,6 +33,7 @@ CODE_ROOT = repo_home()
 TICKET_REPO = CODE_ROOT / "ixdar-tickets"
 TRANSCRIPT_ROOT = Path.home() / ".claude" / "projects"
 WORKTREE_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+TICKET_ENTRY_NAME = re.compile(r"^\s*([A-Za-z]+)-\d+\b")
 # The same vmArgs the hand-written entries in Ixdar's launch.json carry, profiler agent first, so an
 # agent's entry runs exactly like the user's own; `ixd wt new` links the profiler the token needs.
 LAUNCH_VM_ARGS = (
@@ -79,11 +80,76 @@ def current_checkout():
     return top, common_dir.parent
 
 
+def shell_directory():
+    """The directory the command was started in, even when it has since been deleted.
+
+    A shell left inside a worktree that ``land`` removed has a current directory that no longer
+    exists, so ``os.getcwd`` fails; the shell's own ``PWD`` still names it.
+
+    :return: the directory, possibly one that no longer exists
+    """
+    try:
+        return Path.cwd()
+    except OSError:
+        return Path(os.environ.get("PWD", "/"))
+
+
+def enclosing_worktree_slot(directory):
+    """The ``<repo>/.claude/worktrees/<name>`` directory holding ``directory``, or None.
+
+    :param directory: any path, existing or not
+    :return: the slot directory, which may no longer be a worktree
+    """
+    parts = directory.absolute().parts
+    for index in range(len(parts) - 2, 0, -1):
+        if parts[index - 1] == ".claude" and parts[index] == "worktrees" and index + 1 < len(parts):
+            return Path(*parts[: index + 2])
+    return None
+
+
+def leftover_directory(name_or_path):
+    """The worktree slot the command refers to when git no longer has a worktree there, or None.
+
+    That is the state ``land`` or ``git worktree remove`` leaves when an editor keeps writing
+    into the folder: a plain directory (or none at all) under ``.claude/worktrees``, no ``.git``
+    entry, and no line in ``git worktree list``.
+
+    :param name_or_path: what the user passed, or "" for the current directory
+    :return: (slot directory, main checkout), or None when it is a live worktree or no slot at all
+    """
+    if not name_or_path:
+        slot = enclosing_worktree_slot(shell_directory())
+    elif Path(name_or_path).is_absolute() or "/" in name_or_path:
+        slot = enclosing_worktree_slot(Path(name_or_path))
+    else:
+        checkout = current_checkout()
+        roots = ([checkout[1]] if checkout else []) + [CODE_ROOT / "Ixdar"]
+        slots = [root / ".claude" / "worktrees" / name_or_path for root in roots]
+        slot = next((candidate for candidate in slots if candidate.is_dir()), None)
+    if slot is None or (slot / ".git").exists():
+        return None
+    main_checkout = slot.parent.parent.parent
+    if not (main_checkout / ".git").exists():
+        return None
+    listing = git(main_checkout, "worktree", "list", "--porcelain", check=False)
+    if f"worktree {slot}" in listing.splitlines():
+        return None
+    return slot, main_checkout
+
+
 def locate_worktree(name_or_path):
     """A bare name like ``craw-27`` resolves to ``<repo>/.claude/worktrees/<name>`` of the
     repository containing the current directory (its main checkout, even when the current
     directory is inside another worktree), falling back to REPO_HOME/Ixdar; a path is used as
     is; no argument means the worktree containing the current directory."""
+    leftover = leftover_directory(name_or_path)
+    if leftover is not None:
+        slot, main_checkout = leftover
+        raise SystemExit(
+            f"{slot.name} is not a worktree any more: git has no worktree at {slot}, so it was "
+            f"landed or removed and what is left is editor output. `ixd land {slot.name}` switches "
+            f"VS Code back to {main_checkout} and deletes the folder."
+        )
     checkout = current_checkout()
     if not name_or_path:
         if checkout is None:
@@ -536,6 +602,118 @@ def insert_launch_entry(text, entry):
     return before + separator + "\n" + block + trailing + text[close:]
 
 
+def configuration_spans(text):
+    """(start, end) of each object in ``configurations``, end exclusive, plus the array's bounds.
+
+    Offsets index the original text; strings, comments and trailing commas are read the way
+    :func:`strip_jsonc` reads them.
+
+    :param text: the launch.json text
+    :return: (open bracket offset, close bracket offset, [(start, end), ...]), or None without the array
+    """
+    stripped = strip_jsonc(text)
+    close = configurations_close(text)
+    if close < 0:
+        return None
+    open_bracket = stripped.find("[", stripped.find('"configurations"'))
+    spans, depth, start, index, in_string = [], 0, -1, open_bracket + 1, False
+    while index < close:
+        character = stripped[index]
+        if in_string:
+            if character == "\\":
+                index += 2
+                continue
+            if character == '"':
+                in_string = False
+        elif character == '"':
+            in_string = True
+        elif character in "[{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif character in "]}":
+            depth -= 1
+            if depth == 0:
+                spans.append((start, index + 1))
+        index += 1
+    return open_bracket, close, spans
+
+
+def remove_launch_entries(text, drop):
+    """The launch.json text without the configurations ``drop`` selects, comments kept.
+
+    Each kept entry keeps the comments and blank lines that sat before it; a dropped entry takes
+    its own with it.
+
+    :param text: the launch.json text
+    :param drop: predicate on a parsed configuration; True removes it
+    :return: (new text, names of the removed entries)
+    """
+    found = configuration_spans(text)
+    if found is None:
+        return text, []
+    open_bracket, close, spans = found
+    stripped = strip_jsonc(text)
+    segments, removed = [], []
+    segment_start = open_bracket + 1
+    for index, (start, end) in enumerate(spans):
+        entry = json.loads(stripped[start:end])
+        if drop(entry):
+            removed.append(str(entry.get("name", "?")))
+        else:
+            segments.append(text[segment_start:end])
+        if index + 1 < len(spans):
+            segment_start = stripped.find(",", end, spans[index + 1][0]) + 1
+    if not removed:
+        return text, []
+    tail = text[spans[-1][1] : close]
+    return text[: open_bracket + 1] + ",".join(segments) + tail + text[close:], removed
+
+
+def ticket_prefixes():
+    """The epic prefixes of the ticket store (PATCH, TOOL, CRAW...), upper-cased."""
+    try:
+        epics = json.loads((TICKET_REPO / "content" / "epics.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    return {str(epic.get("prefix", "")).upper() for epic in epics.get("epics", [])} - {""}
+
+
+def names_a_ticket(entry, prefixes):
+    """Whether a launch entry is a ticket's verification aid: its name starts with a ticket id.
+
+    ``wt launch-add`` names entries ``<TICKET-ID>: <scene>``, so ``PATCH-117: quad-layout`` matches
+    and ``Quad Layout`` does not.
+
+    :param entry: a parsed launch configuration
+    :param prefixes: the epic prefixes from :func:`ticket_prefixes`
+    :return: True for an entry named after a ticket
+    """
+    match = TICKET_ENTRY_NAME.match(str(entry.get("name", "")))
+    return bool(match) and match.group(1).upper() in prefixes
+
+
+def strip_ticket_launch_entries(worktree):
+    """Remove every ticket-named entry from the worktree's launch.json, leaving other changes alone.
+
+    A launch entry a ticket adds on purpose (a new scene's) keeps a plain name and lands; the
+    ``<TICKET-ID>: ...`` entries ``wt launch-add`` wrote for F5 verification do not, including any
+    that reached the main branch earlier.
+
+    :param worktree: the worktree directory
+    :return: names of the removed entries
+    """
+    path = worktree / ".vscode" / "launch.json"
+    if not path.exists():
+        return []
+    prefixes = ticket_prefixes()
+    text = path.read_text(encoding="utf-8")
+    new_text, removed = remove_launch_entries(text, lambda entry: names_a_ticket(entry, prefixes))
+    if removed:
+        path.write_text(new_text, encoding="utf-8")
+    return removed
+
+
 def launch_entry(name, scene, properties):
     """A java launch configuration running one scene id, with each ``k=v`` property as ``-Dk=v``."""
     vm_args = LAUNCH_VM_ARGS
@@ -647,10 +825,13 @@ def brief_text(worktree, branch, main_branch):
         "model:    the uncommitted diff in this worktree IS the proposed change; leave it uncommitted",
         f"ticket:   {ticket_id}  {ticket_line}",
         "git:      add, commit, merge, branch, checkout, reset and stash are denied; ixd wt is the one door",
-        f"  ixd wt status {branch}      branch, distance from {main_branch}, changed files, last agent note",
+        f"  ixd wt status {branch}      branch, distance from {main_branch}, refs, changed files, diagnostics, last agent note",
         f"  ixd wt sync {branch}        replay your diff onto the current {main_branch} (run it first, and for newer {main_branch})",
         f"  ixd wt launch-add {branch} --scene <id> [--property k=v]   the .vscode/launch.json entry for the user's F5",
-        f"  ixd wt done {branch}        sync, build, run that entry, check tmp/ screenshots, mark the ticket REVIEW",
+        f"  ixd wt done {branch}        sync, refuse leftover diagnostics, build, run that entry, check tmp/ screenshots, mark REVIEW",
+        "diagnostics: log lines, public counters, describe/dump methods, SAMPLE_LIMITs and *Probe.java do not land",
+        "          unless the ticket's definition of done names them; `wt status` lists the ones in your diff",
+        "long runs: foreground, output redirected to tmp/<name>.log, then read that file; never the harness tasks/ directory",
     ]
     if (worktree / "pom.xml").exists():
         lines += [

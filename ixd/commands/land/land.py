@@ -7,7 +7,7 @@ FOR THE USER ONLY. Every spelling of this command is on the Claude permission de
 import subprocess
 from typing import Annotated, Literal
 
-from ... import worktree
+from ... import editor, worktree
 from ...registry import CliOption, cli_command
 
 TICKET_REPO = worktree.TICKET_REPO
@@ -28,10 +28,22 @@ def land(
     """Merge a worktree's change into the main branch and clean up after it.
 
     Six steps, each refusing to continue on failure. Replay the change onto the current main branch.
-    Restore the main branch's .vscode/launch.json, because the entries an agent added are
-    verification aids rather than part of the change. Squash the diff into one commit. Fast-forward
-    the main checkout. Remove the worktree and its branch. Mark the branch's ticket DONE, which
-    happens after the removal so the ticket CLI's unmerged-worktree guard sees the landed state.
+    Remove every .vscode/launch.json entry named after a ticket (``PATCH-117: quad-layout``), the
+    F5 verification aids ``wt launch-add`` writes, while other launch.json changes, such as a new
+    scene's entry, land. Squash the diff into one commit. Fast-forward the main checkout. Remove
+    the worktree and its branch. Mark the branch's ticket DONE, which happens after the removal so
+    the ticket CLI's unmerged-worktree guard sees the landed state.
+
+    Before the removal, a VS Code window that shows the worktree is switched to the main checkout
+    with ``code -r``, so its Java extension stops writing into the directory being deleted; this
+    waits until the very end when land itself runs in that window's terminal, which the switch
+    would close. ``code -r`` is used only when it will reach that window (the only window, or the
+    last active one); otherwise the output says which window to switch. Whatever the extension
+    wrote back meanwhile is cleared once more after the rebuild.
+
+    Run on a folder git no longer has a worktree for (already landed, but an editor kept writing
+    into it, or the shell still sits in the deleted directory), it only finishes the cleanup:
+    VS Code off it, folder deleted.
 
     A sync that stopped on conflicts is finished here when the markers are gone, so resolving the
     files and running this one command is the whole recovery; it refuses, naming the files, while
@@ -44,11 +56,15 @@ def land(
     :param worktree_name: worktree path or bare name, defaulting to the one holding the current directory
     :param message: override the commit message entirely, instead of building it from the ticket
     :param body: commit body: the subject alone, the ticket's changes-made bullets, or its description
-    :param keep_launch: keep the worktree's launch.json changes instead of restoring the main branch's
+    :param keep_launch: keep the ticket-named launch.json entries instead of removing them
     :param keep_worktree: merge but leave the worktree and branch in place
     :param no_build: skip recompiling the main checkout after the merge
     :param no_mark: leave the ticket's status alone instead of marking it DONE
     """
+    leftover = worktree.leftover_directory(worktree_name)
+    if leftover is not None:
+        clean_up_leftover(*leftover)
+        return 0
     path, branch, main_branch = worktree.resolve_worktree(worktree_name, allow_rebase=True)
     subject = message.strip() or default_message(branch, body)
     print(f"== landing {branch} as: {subject.splitlines()[0]}")
@@ -61,10 +77,10 @@ def land(
     print(f"== sync {branch} onto {main_branch}")
     worktree.sync(path, branch, main_branch)
 
-    if not keep_launch and (path / ".vscode" / "launch.json").exists():
-        if worktree.git(path, "diff", "--name-only", "--", ".vscode/launch.json"):
-            worktree.git(path, "checkout", main_branch, "--", ".vscode/launch.json")
-            print("== stripped .vscode/launch.json changes (verification entries)")
+    if not keep_launch:
+        removed = worktree.strip_ticket_launch_entries(path)
+        if removed:
+            print(f"== removed ticket launch entries: {', '.join(removed)}")
 
     if worktree.changed_files(path):
         print(f"== squash-commit {branch}")
@@ -83,6 +99,9 @@ def land(
     else:
         require_already_merged(main_checkout, branch, main_branch)
 
+    switch_last = keep_worktree or editor.running_inside(path)
+    if not switch_last:
+        editor.return_to_main_checkout(path, main_checkout)
     if keep_worktree:
         print(f"== kept worktree {path} and branch {branch}")
     else:
@@ -93,10 +112,35 @@ def land(
 
     if not no_mark:
         mark_ticket_done(branch)
-    if not no_build:
-        rebuild_main_checkout(main_checkout)
+    try:
+        if not no_build:
+            rebuild_main_checkout(main_checkout)
+    finally:
+        if not keep_worktree:
+            if switch_last:
+                editor.return_to_main_checkout(path, main_checkout)
+            worktree.remove_leftovers(path)
     print("done")
     return 0
+
+
+def clean_up_leftover(slot, main_checkout):
+    """Finish the cleanup of a worktree git no longer has: editor off it, folder gone.
+
+    Landing or removing a worktree an editor still shows leaves a folder the editor keeps writing
+    into, and a shell whose current directory was deleted. Nothing is merged or marked here.
+
+    :param slot: the ``.claude/worktrees/<name>`` directory
+    :param main_checkout: the repository's main checkout
+    """
+    branch = worktree.git(main_checkout, "show-ref", "--verify", f"refs/heads/{slot.name}", check=False)
+    state = f"branch {slot.name} still exists" if branch else f"branch {slot.name} is gone"
+    print(f"== {slot.name}: git has no worktree there ({state}); cleaning up what is left")
+    editor.return_to_main_checkout(slot, main_checkout)
+    worktree.remove_leftovers(slot)
+    if worktree.enclosing_worktree_slot(worktree.shell_directory()) == slot:
+        print(f"your shell is still in the deleted folder: cd {main_checkout}")
+    print("done")
 
 
 def finish_interrupted_sync(path, branch, main_branch):
