@@ -19,6 +19,10 @@ def done(
     F5 runs it, only headless, so a crash on that path is caught here and never at the user's
     keyboard; there is no way to skip it.
 
+    After the build, each module's Maven classes are copied over the IDE's ``target-ide/``
+    output, which is what F5 actually runs: VS Code's Java extension may not have rebuilt after
+    the agent's edits, and would otherwise launch stale classes without a word.
+
     :param worktree_name: worktree path or bare name, defaulting to the one holding the current directory
     """
     path, branch, main_branch = worktree.resolve_worktree(worktree_name)
@@ -26,6 +30,11 @@ def done(
     worktree.sync(path, branch, main_branch)
     require_no_leftover_diagnostics(path, branch)
     build(path)
+    refreshed = worktree.refresh_ide_classes(path)
+    if refreshed:
+        print(
+            f"== IDE classes: {', '.join(module.name for module in refreshed)} target-ide/ now hold the build"
+        )
     entry = require_launch_entry(path, branch)
     print(f"== launch entry: {entry.get('name')} (scene {entry.get('args')})")
     shot = path / "tmp" / f"{branch}-launch.png"

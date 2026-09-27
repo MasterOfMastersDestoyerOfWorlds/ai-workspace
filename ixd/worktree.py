@@ -832,6 +832,7 @@ def brief_text(worktree, branch, main_branch):
         "diagnostics: log lines, public counters, describe/dump methods, SAMPLE_LIMITs and *Probe.java do not land",
         "          unless the ticket's definition of done names them; `wt status` lists the ones in your diff",
         "long runs: foreground, output redirected to tmp/<name>.log, then read that file; never the harness tasks/ directory",
+        "timeouts: every model load in a script under `timeout`, 10s per model; kill the JVM on overrun and move on",
     ]
     if (worktree / "pom.xml").exists():
         lines += [
@@ -853,6 +854,37 @@ def cli_has_command(worktree, name):
         ["uv", "run", "ixdar-cli", name, "--help"], cwd=str(worktree), capture_output=True, text=True
     )
     return result.returncode == 0 and "invalid choice" not in result.stderr
+
+
+IDE_OUTPUT = "target-ide"
+MAVEN_OUTPUT = "target"
+CLASS_DIRS = ("classes", "test-classes")
+
+
+def refresh_ide_classes(worktree):
+    """Mirror each module's Maven build output into the IDE's, so F5 runs what was just verified.
+
+    VS Code's Java extension compiles into ``target-ide/`` (the output path in each module's
+    ``.classpath``), not the ``target/`` Maven fills, and it may not have rebuilt after an agent's
+    edits: its build can lag, or fail and be launched over anyway. Every module that has an
+    ``target-ide`` gets its ``classes`` and ``test-classes`` replaced by Maven's, class for
+    class. Modules the IDE never opened have no ``target-ide`` and are left alone.
+
+    :param worktree: the worktree directory
+    :return: the module directories refreshed
+    """
+    refreshed = []
+    for ide_dir in sorted(worktree.glob(f"*/{IDE_OUTPUT}")):
+        module = ide_dir.parent
+        for name in CLASS_DIRS:
+            built = module / MAVEN_OUTPUT / name
+            if not built.is_dir():
+                continue
+            target = ide_dir / name
+            shutil.rmtree(target, ignore_errors=True)
+            shutil.copytree(built, target)
+        refreshed.append(module)
+    return refreshed
 
 
 def run_step(label, command, cwd):

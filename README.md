@@ -104,6 +104,7 @@ uv run black ixd hooks
 | [`ixd docs`](#ixd-docs) | Write the command reference into README.md and HELP.md from the docstrings. |
 | [`ixd land`](#ixd-land) | Merge a worktree's change into the main branch and clean up after it. |
 | [`ixd ninfer`](#ixd-ninfer) | Start ninfer in the Windows box's WSL distro and make sure pi's models.json points at it. |
+| [`ixd review`](#ixd-review) | Open a ticket's page in the browser and its worktree in VS Code, or pick one in REVIEW. |
 | [`ixd setup`](#ixd-setup) | Clone the repositories, install the commands, record REPO_HOME, install the autofix artifact. |
 | [`ixd ssh setup`](#ixd-ssh-setup) | Send the Windows-side OpenSSH setup script to a peer, keyed to this machine, and test it. |
 | [`ixd stats`](#ixd-stats) | Print wall time by activity, thinking pauses, slow calls, errors and repeated command shapes. |
@@ -208,6 +209,35 @@ already up is left alone, and the proxy is repointed either way.
 | `--flags` | — | ninfer-serve flags, instead of the ones ninfer-start.sh holds |
 | `--stop` | off | stop the server instead, giving the GPU back |
 | `--check` | off | report the state without starting anything |
+
+## review
+
+### ixd review
+
+Open a ticket's page in the browser and its worktree in VS Code, or pick one in REVIEW.
+
+```
+ixd review [TICKET] [--no-editor]
+```
+
+The page shows the whole ticket (description, definition of done, testing plan, todos,
+unknowns, related files, dependencies with their titles) and, when the ticket has a worktree,
+its branch, changed files, F5 launch entry, the screenshots under ``tmp/`` and the last agent
+note. It is written to ``~/.cache/ixd/review/<ID>.html`` and carries buttons that open the
+worktree and the ticket JSON in VS Code. The worktree is opened with ``code <folder>``, which
+focuses the window already showing it and opens a new one otherwise.
+
+Under Hyprland the page opens in a browser window of its own on the first empty workspace
+right of every workspace in use, VS Code goes on the one after it (a window already showing
+the worktree is moved there, not duplicated), and the view switches to the page.
+
+With no ticket, every ticket in the REVIEW state is listed with its description; move with
+the up and down arrows (or k and j) or type an entry's number, then press enter to open it.
+
+| argument | default | meaning |
+| --- | --- | --- |
+| TICKET | — | ticket id such as ``craw-29``; omit it to choose from the tickets in REVIEW |
+| `--no-editor` | off | open only the page, leaving VS Code alone |
 
 ## setup
 
@@ -363,6 +393,10 @@ name them there when they are meant to land. Every step must pass. A failure sto
 REVIEW is a claim that the user can verify the work with F5. The launch entry is run exactly as
 F5 runs it, only headless, so a crash on that path is caught here and never at the user's
 keyboard; there is no way to skip it.
+
+After the build, each module's Maven classes are copied over the IDE's ``target-ide/``
+output, which is what F5 actually runs: VS Code's Java extension may not have rebuilt after
+the agent's edits, and would otherwise launch stale classes without a word.
 
 | argument | default | meaning |
 | --- | --- | --- |

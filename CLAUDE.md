@@ -16,7 +16,8 @@ file.
   `ixd/commands/<command>/<subcommand>.py`, and `README.md` plus `HELP.md` are generated from those
   docstrings by `ixd docs`; the shared engines are `worktree.py`, `diagnostics.py`, `machine.py`,
   `transcripts.py` and `paths.py`), `repos.json` and `reports/`. `ixd` is the only executable: `ixd wt`, `ixd land`,
-  `ixd setup`, `ixd stats`, `ixd docs`. The bare `wt`, `land` and `setup` names are gone. Run
+  `ixd setup`, `ixd stats`, `ixd docs`, `ixd review` (the user's: a ticket's page in the browser
+  plus its worktree in VS Code). The bare `wt`, `land` and `setup` names are gone. Run
   `ixd docs` after changing a docstring and `uv run black ixd hooks` after changing any Python here.
 - `$REPO_HOME/Ixdar` — the Java/Maven application (`annotations`, `ixdar-app`) plus the
   `ixdar_automation_cli` Python CLI (`uv run ixdar-cli`). Agent worktrees live at
@@ -111,6 +112,8 @@ ticket agent actually reads; keep the two in step when a verb changes.
 The live ticket store is `$REPO_HOME/ixdar-tickets` (standalone clone, branch `main`). The
 nested `Ixdar/ixdar-tickets` submodule is dead; do not use it.
 
+- The user does not keep ticket numbers in their head. When talking to them, say what a ticket
+  is about (the model, the bug, the feature) every time, with the id only as a label beside it.
 - Mutate tickets only through `uv run python generate_board.py create|update|mark`, never by
   hand-editing JSON. If the CLI lacks an option, extend the script first.
 - `create` and `update` support `--blocked-by` / `--blocks` (reciprocal), `--unknown`,
