@@ -194,12 +194,47 @@ def running_inside(worktree):
     return True
 
 
+def started_inside(folder):
+    """PIDs of VS Code processes whose working directory is the folder or below it (Linux only).
+
+    VS Code started by ``code`` from a shell in a worktree runs from there, and every process it
+    spawns later inherits that directory. Once the folder is deleted, a window opened or reloaded
+    afterwards gets an extension host that cannot start its extensions: Source Control sits on
+    "Scanning folder for Git repositories" for good. Only quitting VS Code fixes it.
+
+    :param folder: the worktree directory, which may already be gone
+    """
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return []
+    prefix = str(folder.absolute())
+    found = []
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            if Path(os.readlink(entry / "exe")).name != CODE:
+                continue
+            cwd = os.readlink(entry / "cwd").removesuffix(" (deleted)")
+        except OSError:
+            continue
+        if cwd == prefix or cwd.startswith(prefix + "/"):
+            found.append(int(entry.name))
+    return found
+
+
 def return_to_main_checkout(worktree, main_checkout):
     """Point the VS Code window that shows the worktree at the main checkout, or say how to.
 
     :param worktree: the worktree directory, removed or about to be
     :param main_checkout: the repository's main checkout to open instead
     """
+    if started_inside(worktree):
+        print(
+            f"== VS Code: it was started from inside {worktree.name}, so windows it opens once that "
+            "folder is gone cannot load extensions (Source Control stays on 'Scanning folder for Git "
+            "repositories'). Quit VS Code completely and start it again."
+        )
     action, why = plan_return(worktree, main_checkout)
     if action == "none":
         return

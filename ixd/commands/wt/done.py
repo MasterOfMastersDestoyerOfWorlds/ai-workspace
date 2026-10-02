@@ -73,12 +73,11 @@ def build(path):
 
     :param path: the worktree directory
     """
-    if worktree.cli_has_command(path, "build"):
-        worktree.run_step("build", ["uv", "run", "ixdar-cli", "build"], path)
-    elif (path / "pom.xml").exists():
-        worktree.run_step("build", worktree.BUILD_COMMAND, path)
-    else:
+    command = worktree.build_command(path)
+    if command is None:
         print("== build: no pom.xml here, skipped")
+    else:
+        worktree.run_step("build", command, path)
 
 
 def require_launch_entry(path, branch):

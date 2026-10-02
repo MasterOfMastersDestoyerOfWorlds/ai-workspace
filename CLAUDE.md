@@ -40,6 +40,12 @@ Never move the session's working directory out of this checkout of ai-workspace.
 paths into the other repos. If a project needs a repo-local feature (worktrees, project settings),
 add or allow it in this repo's `.claude/settings.json` rather than relocating the session.
 
+## CLAUDE.md files
+
+Never edit any `CLAUDE.md` (this one, Ixdar's, or any other repo's) unless the user asks for that
+edit in so many words. Instructions here that say to keep docs in step do not count as asking. When
+a change makes one stale, say so in the report and let the user decide.
+
 ## Reading files
 
 Read source files with the Read tool, not `cat` or `sed -n` ranges, even when the harness says to
@@ -131,7 +137,9 @@ nested `Ixdar/ixdar-tickets` submodule is dead; do not use it.
 Write: when the edited file is a `.java` file under an Ixdar checkout or worktree it audits that
 one file with the configuration the build uses (`checkstyle.xml` off the autofix-tool artifact,
 classpath cached in `~/.cache/ai-workspace-hooks/`) and returns the violations in about a second,
-so JavadocDescriptionLength no longer costs a module compile. `shell_edit_guard.py` runs before
+so JavadocDescriptionLength no longer costs a module compile. It also runs SingleCallerHelperCheck,
+which the build leaves off, incrementally: only private single-caller methods declared on lines
+the file's uncommitted diff adds are reported, and `// single-caller: <reason>` above one keeps it. `shell_edit_guard.py` runs before
 Bash and refuses `sed -i`, `awk -i inplace`, `perl -pi`, python heredocs and `python -c` that
 write files, and `cat`, `tee` or a redirection onto a tracked source path, pointing at Edit and
 Write instead; it also refuses `cat` of four or more repository files, pointing at Read. Shell

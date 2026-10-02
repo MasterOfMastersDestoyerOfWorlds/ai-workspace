@@ -84,14 +84,53 @@ def wait_for_new(before, classes, seconds):
     return None
 
 
+def dispatch(lua, legacy):
+    """Run one dispatcher, in the Lua form Hyprland 0.56 takes and else the older plain form.
+
+    ``hyprctl dispatch`` answers ``ok`` on success. The Lua form ignores keys it does not know
+    rather than refusing them, so only its documented shapes are used here: ``focus`` takes a
+    window or a workspace, and ``window.move`` acts on the active window.
+
+    :param lua: the expression, such as ``hl.dsp.focus({ workspace = "4" })``
+    :param legacy: the same dispatcher's pre-Lua arguments, such as ``["workspace", "4"]``
+    :return: whether either form was accepted
+    """
+    return hyprctl("dispatch", lua).strip() == "ok" or hyprctl("dispatch", *legacy).strip() == "ok"
+
+
+def active_address():
+    """The address of the focused window, or None."""
+    try:
+        return json.loads(hyprctl("activewindow", "-j") or "{}").get("address")
+    except ValueError:
+        return None
+
+
+def workspace_of(address):
+    """The workspace id a window is on, or None when it is gone."""
+    return next((client["workspace"]["id"] for client in clients() if client["address"] == address), None)
+
+
 def move(address, workspace):
-    """Move a window to a workspace without following it there."""
-    hyprctl("dispatch", "movetoworkspacesilent", f"{workspace},address:{address}")
+    """Move one window to a workspace without following it there, returning whether it got there.
+
+    The window is focused first and moved as the active window, and the move only happens once
+    the focused window is checked to be that one: a move that missed would take whatever window
+    the user is in, such as the terminal that ran the command.
+    """
+    dispatch(f'hl.dsp.focus({{ window = "address:{address}" }})', ["focuswindow", f"address:{address}"])
+    if active_address() != address:
+        return False
+    dispatch(
+        f'hl.dsp.window.move({{ workspace = "{workspace}", follow = false }})',
+        ["movetoworkspacesilent", str(workspace)],
+    )
+    return workspace_of(address) == workspace
 
 
 def show(workspace):
     """Switch the view to a workspace."""
-    hyprctl("dispatch", "workspace", str(workspace))
+    dispatch(f'hl.dsp.focus({{ workspace = "{workspace}" }})', ["workspace", str(workspace)])
 
 
 def default_browser():
@@ -129,17 +168,20 @@ def launch_detached(command):
 
 
 def open_page(url, workspace):
-    """Open the URL in a new browser window on the workspace, returning whether it got there."""
+    """Open the URL in a new browser window and move it to the workspace.
+
+    :return: "placed" when it is there, "stayed" when the window opened but would not move, or
+        None when no new window appeared (the caller then opens the page the plain way)
+    """
     executable = default_browser()
     if not executable or not shutil.which(executable):
-        return False
+        return None
     before = {client["address"] for client in clients()}
     launch_detached([executable, "--new-window", url])
     address = wait_for_new(before, browser_classes(executable), BROWSER_WAIT_SECONDS)
     if address is None:
-        return False
-    move(address, workspace)
-    return True
+        return None
+    return "placed" if move(address, workspace) else "stayed"
 
 
 def editor_window(folder, shows_folder):
@@ -164,14 +206,14 @@ def open_editor(folder, workspace, existing, run_code):
     :return: "moved" or "opened" on success, or why it failed
     """
     if existing:
-        move(existing, workspace)
-        return "moved"
+        return "moved" if move(existing, workspace) else "the window on it would not move"
     before = {client["address"] for client in clients()}
-    result = run_code(["--new-window", str(folder)], folder)
+    # From home, never the worktree: a VS Code this call starts would run from the worktree and
+    # break once `ixd land` deletes it (see editor.started_inside).
+    result = run_code(["--new-window", str(folder)], Path.home())
     if result is None or result.returncode != 0:
         return "no answer from code" if result is None else (result.stderr or result.stdout).strip()
     address = wait_for_new(before, CODE_CLASSES, EDITOR_WAIT_SECONDS)
     if address is None:
         return f"no new VS Code window appeared within {EDITOR_WAIT_SECONDS}s"
-    move(address, workspace)
-    return "opened"
+    return "opened" if move(address, workspace) else "opened a window on it, but it would not move"

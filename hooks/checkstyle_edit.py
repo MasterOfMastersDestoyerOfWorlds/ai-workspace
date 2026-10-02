@@ -9,6 +9,12 @@ reach the model at edit time instead of after a compile.
 The configuration is the one the Ixdar build uses: `checkstyle.xml` is read off the classpath
 out of the autofix-tool artifact, exactly as maven-checkstyle-plugin reads it. The resolved
 classpath is cached under ~/.cache, so only the first edit of a session pays maven.
+
+A second pass runs SingleCallerHelperCheck, which the build leaves off because the codebase holds
+many old single-caller helpers. Here it is incremental: only a private method declared on a line
+the file's uncommitted diff adds is reported, so new helpers are caught when they are written and
+old ones stay quiet. A `// single-caller: <reason>` comment directly above the declaration keeps
+one deliberately.
 """
 
 import os
@@ -45,6 +51,26 @@ MAVEN_TIMEOUT_SECONDS = 120
 CHECKSTYLE_TIMEOUT_SECONDS = 60
 
 VIOLATION_LINE = re.compile(r"^\[(?:ERROR|WARN)\]\s*(?P<body>.*)$")
+
+SINGLE_CALLER_CONFIGURATION = os.path.join(CACHE_DIR, "single-caller-checkstyle.xml")
+
+SINGLE_CALLER_CONFIGURATION_TEXT = """<?xml version="1.0"?>
+<!DOCTYPE module PUBLIC "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN"
+    "https://checkstyle.org/dtds/configuration_1_3.dtd">
+<module name="Checker">
+  <module name="TreeWalker">
+    <module name="ixdar.autofix.checkstyle.SingleCallerHelperCheck"/>
+  </module>
+</module>
+"""
+
+SINGLE_CALLER_LINE = re.compile(r":(?P<line>\d+):\d+: single\.caller\.helper")
+
+SINGLE_CALLER_KEEP_MARKER = "// single-caller:"
+
+METHOD_NAME = re.compile(r"(?P<name>\w+)\s*\(")
+
+DIFF_HUNK = re.compile(r"^@@ -\S+ \+(?P<start>\d+)(?:,(?P<count>\d+))? @@")
 
 DEPENDENCY_VERSION_TEMPLATE = r"<artifactId>{0}</artifactId>\s*<version>([^<]+)</version>"
 
@@ -218,12 +244,12 @@ def read_cached_classpath():
     return classpath
 
 
-def run_checkstyle(classpath, path):
-    """Audits one Java file, returning the violation lines checkstyle reported."""
+def run_checkstyle(classpath, path, configuration=CHECKSTYLE_CONFIGURATION):
+    """Audits one Java file, returning checkstyle's combined output."""
     java = os.path.join(os.environ["JAVA_HOME"], "bin", "java") if os.environ.get("JAVA_HOME") else "java"
     try:
         finished = subprocess.run(
-            [java, "-cp", classpath, CHECKSTYLE_MAIN, "-c", CHECKSTYLE_CONFIGURATION, path],
+            [java, "-cp", classpath, CHECKSTYLE_MAIN, "-c", configuration, path],
             capture_output=True,
             text=True,
             timeout=CHECKSTYLE_TIMEOUT_SECONDS,
@@ -231,7 +257,76 @@ def run_checkstyle(classpath, path):
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise ClasspathUnavailable(f"checkstyle did not run ({error})") from error
-    return violation_lines(finished.stdout + finished.stderr, path)
+    return finished.stdout + finished.stderr
+
+
+def added_lines(path):
+    """Returns the line numbers the file's uncommitted diff adds, or None when all of it is new.
+
+    In an Ixdar worktree HEAD is the master tip, so this is exactly the proposed change.
+    """
+    directory = os.path.dirname(os.path.abspath(path))
+    try:
+        tracked = subprocess.run(
+            ["git", "-C", directory, "ls-files", "--error-unmatch", path],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if tracked.returncode != 0:
+            return None
+        diff = subprocess.run(
+            ["git", "-C", directory, "diff", "-U0", "HEAD", "--", path],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    lines = set()
+    for raw in diff.stdout.splitlines():
+        match = DIFF_HUNK.match(raw)
+        if match:
+            start = int(match.group("start"))
+            count = int(match.group("count") or 1)
+            lines.update(range(start, start + count))
+    return lines
+
+
+def new_single_caller_helpers(classpath, path):
+    """Returns the private single-caller methods this change declares, as report lines."""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    with open(SINGLE_CALLER_CONFIGURATION, "w", encoding="utf-8") as handle:
+        handle.write(SINGLE_CALLER_CONFIGURATION_TEXT)
+    flagged = [
+        int(match.group("line"))
+        for match in map(
+            SINGLE_CALLER_LINE.search,
+            run_checkstyle(classpath, path, SINGLE_CALLER_CONFIGURATION).splitlines(),
+        )
+        if match
+    ]
+    if not flagged:
+        return []
+    added = added_lines(path)
+    with open(path, encoding="utf-8") as handle:
+        source = handle.read().splitlines()
+    reports = []
+    for line in flagged:
+        if added is not None and line not in added:
+            continue
+        if line >= 2 and source[line - 2].strip().startswith(SINGLE_CALLER_KEEP_MARKER):
+            continue
+        declaration = source[line - 1] if line <= len(source) else ""
+        name_match = METHOD_NAME.search(declaration)
+        name = name_match.group("name") if name_match else "this method"
+        reports.append(
+            f"{os.path.basename(path)}:{line}: private method {name}() has one caller; inline it "
+            f"into that caller, or move it where it belongs (a public method on the data type it "
+            f"works on) if it is reusable. If it really earns its place, put "
+            f"`{SINGLE_CALLER_KEEP_MARKER} <reason>` on the line above it."
+        )
+    return reports
 
 
 def violation_lines(output, path):
@@ -266,19 +361,29 @@ def main():
     if root is None:
         return 0
     try:
-        violations = run_checkstyle(resolve_classpath(pom_text), path)
+        classpath = resolve_classpath(pom_text)
+        violations = violation_lines(run_checkstyle(classpath, path), path)
+        helpers = new_single_caller_helpers(classpath, path)
     except ClasspathUnavailable as error:
         if already_warned(event):
             return 0
         block(f"{UNAVAILABLE_ADVICE}\n\n({error})")
         return 0
-    if not violations:
-        return 0
-    reported = "\n".join(f"  {line}" for line in violations)
-    block(
-        f"checkstyle on {os.path.basename(path)} (ai-workspace hook, same configuration as the "
-        f"Ixdar build):\n{reported}\nFix these now; the build fails on them."
-    )
+    sections = []
+    if violations:
+        reported = "\n".join(f"  {line}" for line in violations)
+        sections.append(
+            f"checkstyle on {os.path.basename(path)} (ai-workspace hook, same configuration as the "
+            f"Ixdar build):\n{reported}\nFix these now; the build fails on them."
+        )
+    if helpers:
+        reported = "\n".join(f"  {line}" for line in helpers)
+        sections.append(
+            f"new single-caller helpers in {os.path.basename(path)} (edit-time only; the build "
+            f"does not check this):\n{reported}"
+        )
+    if sections:
+        block("\n\n".join(sections))
     return 0
 
 

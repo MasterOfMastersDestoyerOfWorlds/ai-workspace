@@ -11,11 +11,12 @@ def continue_sync(worktree_name: Annotated[str, CliOption(positional=True)] = ""
     """After the conflict markers are gone, finish the interrupted sync.
 
     Refuses while any tracked file outside tmp/ still holds a marker, and refuses when a file git
-    listed as unmerged has vanished from the working tree.
+    listed as unmerged has vanished from the working tree. Like `sync`, it then compiles and
+    refreshes the IDE's ``target-ide/``, exiting 1 when that build fails.
 
     :param worktree_name: worktree path or bare name, defaulting to the one holding the current directory
     """
     path, branch, main_branch = worktree.resolve_worktree(worktree_name, allow_rebase=True)
     worktree.require_sync_in_progress(path, branch)
     worktree.continue_rebase(path, branch, main_branch)
-    return 0
+    return 0 if worktree.rebuild_for_ide(path) else 1

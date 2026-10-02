@@ -231,7 +231,9 @@ Under Hyprland the page opens in a browser window of its own on the first empty 
 right of every workspace in use, VS Code goes on the one after it (a window already showing
 the worktree is moved there, not duplicated), and the view switches to the page.
 
-With no ticket, every ticket in the REVIEW state is listed with its description; move with
+With no ticket, every ticket in the REVIEW state is listed with its description and a score in
+brackets, the number of open tickets that depend on it directly or through a chain, highest
+score first; move with
 the up and down arrows (or k and j) or type an entry's number, then press enter to open it.
 
 | argument | default | meaning |
@@ -373,7 +375,8 @@ ixd wt continue [WORKTREE_NAME]
 ```
 
 Refuses while any tracked file outside tmp/ still holds a marker, and refuses when a file git
-listed as unmerged has vanished from the working tree.
+listed as unmerged has vanished from the working tree. Like `sync`, it then compiles and
+refreshes the IDE's ``target-ide/``, exiting 1 when that build fails.
 
 | argument | default | meaning |
 | --- | --- | --- |
@@ -480,6 +483,11 @@ ixd wt sync [WORKTREE_NAME]
 
 Work is never lost: the change is parked in a temporary commit, replayed, then unpacked. A real
 conflict leaves the rebase in progress with the files listed, for `continue` or `abort`.
+
+When the tree moved, it is compiled and Maven's classes are copied over the IDE's
+``target-ide/``: VS Code compiles the annotation registries Maven generates rather than
+generating its own, so without this F5 runs registries missing whatever master added. A failed
+build leaves the sync in place and exits 1.
 
 | argument | default | meaning |
 | --- | --- | --- |

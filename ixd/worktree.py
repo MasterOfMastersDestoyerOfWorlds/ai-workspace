@@ -887,6 +887,49 @@ def refresh_ide_classes(worktree):
     return refreshed
 
 
+def build_command(worktree):
+    """The worktree's compile command: the project's own ``ixdar-cli build`` when it has one,
+    raw Maven when there is a pom.xml, otherwise None."""
+    if cli_has_command(worktree, "build"):
+        return ["uv", "run", "ixdar-cli", "build"]
+    if (worktree / "pom.xml").exists():
+        return BUILD_COMMAND
+    return None
+
+
+def rebuild_for_ide(worktree):
+    """Compile a freshly synced worktree and mirror the result into the IDE's output.
+
+    VS Code never runs the annotation processors (apt is off in each module's ``.settings``): it
+    compiles Maven's ``target/generated-sources/annotations`` as a plain source folder. A sync that
+    brings in a new annotated mesh node, scene or command therefore leaves those generated
+    registries stale until Maven compiles again, and F5 runs a registry missing the new entries
+    ("Unknown node type"). Building here regenerates them and refreshes ``target-ide/``.
+
+    :param worktree: the worktree directory
+    :return: False when the build failed (``target-ide/`` is then left as it was), else True
+    """
+    command = build_command(worktree)
+    if command is None:
+        print("== build: no pom.xml here, skipped")
+        return True
+    print(f"== build: {' '.join(command)}")
+    result = subprocess.run(command, cwd=str(worktree), capture_output=True, text=True)
+    if result.returncode != 0:
+        output = (result.stderr or result.stdout).strip()
+        print(
+            f"build failed on the synced tree; target-ide/ left as it was, so F5 runs stale "
+            f"classes until it compiles.\n{output[-3000:]}"
+        )
+        return False
+    refreshed = refresh_ide_classes(worktree)
+    if refreshed:
+        print(
+            f"== IDE classes: {', '.join(module.name for module in refreshed)} target-ide/ now hold the build"
+        )
+    return True
+
+
 def run_step(label, command, cwd):
     """Run one step of `done`, echoing it, and exit with its output when it fails."""
     print(f"== {label}: {' '.join(command)}")
@@ -926,6 +969,7 @@ def sync(worktree, branch, main_branch):
     :param worktree: the worktree directory
     :param branch: its branch
     :param main_branch: the branch to replay onto
+    :return: True when the tree moved onto newer commits, False when it was already on top
     """
     ahead, behind = ahead_behind(worktree, branch, main_branch)
     parked = stage_all(worktree)
@@ -937,7 +981,7 @@ def sync(worktree, branch, main_branch):
         print(
             f"{branch}: already on top of {main_branch}; {len(changed_files(worktree))} file(s) uncommitted"
         )
-        return
+        return False
     replay = subprocess.run(
         ["git", "-C", str(worktree), "rebase", "--quiet", main_branch], capture_output=True, text=True
     )
@@ -947,7 +991,7 @@ def sync(worktree, branch, main_branch):
             # git rerere replayed a resolution recorded by an earlier sync and stopped for review.
             print(f"{branch}: conflict resolved from an earlier sync (git rerere); continuing")
             continue_rebase(worktree, branch, main_branch)
-            return
+            return True
         raise SystemExit(
             f"{branch}: replaying onto {main_branch} stopped on conflicts. The rebase is left in "
             f"progress: fix the conflict markers in the files below, then run `continue`; or run "
@@ -955,6 +999,7 @@ def sync(worktree, branch, main_branch):
             f"conflicting files:\n" + "\n".join(f"  {c}" for c in conflicts.splitlines())
         )
     unpack(worktree, branch, main_branch)
+    return True
 
 
 def unpack(worktree, branch, main_branch):
