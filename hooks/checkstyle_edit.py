@@ -10,11 +10,13 @@ The configuration is the one the Ixdar build uses: `checkstyle.xml` is read off 
 out of the autofix-tool artifact, exactly as maven-checkstyle-plugin reads it. The resolved
 classpath is cached under ~/.cache, so only the first edit of a session pays maven.
 
-A second pass runs SingleCallerHelperCheck, which the build leaves off because the codebase holds
-many old single-caller helpers. Here it is incremental: only a private method declared on a line
-the file's uncommitted diff adds is reported, so new helpers are caught when they are written and
-old ones stay quiet. A `// single-caller: <reason>` comment directly above the declaration keeps
-one deliberately.
+A second pass runs two checks the build leaves off because the codebase holds many old
+violations: SingleCallerHelperCheck (a private method with one caller should be inlined there)
+and MethodVisibilityCheck (a method is public or private, never protected or package-private,
+which is how a helper used to dodge the single-caller check). Here the pass is incremental: only a
+method declared on a line the file's uncommitted diff adds is reported, so new code is caught when
+it is written and old code stays quiet. There is no opt-out comment. The visibility rule applies
+only under src/main/java, matching the build, which does not check test sources.
 """
 
 import os
@@ -52,23 +54,24 @@ CHECKSTYLE_TIMEOUT_SECONDS = 60
 
 VIOLATION_LINE = re.compile(r"^\[(?:ERROR|WARN)\]\s*(?P<body>.*)$")
 
-SINGLE_CALLER_CONFIGURATION = os.path.join(CACHE_DIR, "single-caller-checkstyle.xml")
+INCREMENTAL_CONFIGURATION = os.path.join(CACHE_DIR, "incremental-checkstyle.xml")
 
-SINGLE_CALLER_CONFIGURATION_TEXT = """<?xml version="1.0"?>
+INCREMENTAL_CONFIGURATION_TEXT = """<?xml version="1.0"?>
 <!DOCTYPE module PUBLIC "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN"
     "https://checkstyle.org/dtds/configuration_1_3.dtd">
 <module name="Checker">
   <module name="TreeWalker">
     <module name="ixdar.autofix.checkstyle.SingleCallerHelperCheck"/>
+    <module name="ixdar.autofix.checkstyle.MethodVisibilityCheck"/>
   </module>
 </module>
 """
 
-SINGLE_CALLER_LINE = re.compile(r":(?P<line>\d+):\d+: single\.caller\.helper")
+VIOLATION_POSITION = re.compile(r"^[^:]+:(?P<line>\d+):")
 
-SINGLE_CALLER_KEEP_MARKER = "// single-caller:"
+METHOD_VISIBILITY_TAG = "[MethodVisibility]"
 
-METHOD_NAME = re.compile(r"(?P<name>\w+)\s*\(")
+MAIN_SOURCE_SEGMENT = os.path.join("src", "main", "java") + os.sep
 
 DIFF_HUNK = re.compile(r"^@@ -\S+ \+(?P<start>\d+)(?:,(?P<count>\d+))? @@")
 
@@ -293,39 +296,26 @@ def added_lines(path):
     return lines
 
 
-def new_single_caller_helpers(classpath, path):
-    """Returns the private single-caller methods this change declares, as report lines."""
+def new_method_violations(classpath, path):
+    """Returns the single-caller and visibility violations on lines this change adds."""
     os.makedirs(CACHE_DIR, exist_ok=True)
-    with open(SINGLE_CALLER_CONFIGURATION, "w", encoding="utf-8") as handle:
-        handle.write(SINGLE_CALLER_CONFIGURATION_TEXT)
-    flagged = [
-        int(match.group("line"))
-        for match in map(
-            SINGLE_CALLER_LINE.search,
-            run_checkstyle(classpath, path, SINGLE_CALLER_CONFIGURATION).splitlines(),
-        )
-        if match
-    ]
+    with open(INCREMENTAL_CONFIGURATION, "w", encoding="utf-8") as handle:
+        handle.write(INCREMENTAL_CONFIGURATION_TEXT)
+    flagged = violation_lines(run_checkstyle(classpath, path, INCREMENTAL_CONFIGURATION), path)
     if not flagged:
         return []
+    main_source = MAIN_SOURCE_SEGMENT in os.path.abspath(path)
     added = added_lines(path)
-    with open(path, encoding="utf-8") as handle:
-        source = handle.read().splitlines()
     reports = []
     for line in flagged:
-        if added is not None and line not in added:
+        position = VIOLATION_POSITION.match(line)
+        if position is None:
             continue
-        if line >= 2 and source[line - 2].strip().startswith(SINGLE_CALLER_KEEP_MARKER):
+        if added is not None and int(position.group("line")) not in added:
             continue
-        declaration = source[line - 1] if line <= len(source) else ""
-        name_match = METHOD_NAME.search(declaration)
-        name = name_match.group("name") if name_match else "this method"
-        reports.append(
-            f"{os.path.basename(path)}:{line}: private method {name}() has one caller; inline it "
-            f"into that caller, or move it where it belongs (a public method on the data type it "
-            f"works on) if it is reusable. If it really earns its place, put "
-            f"`{SINGLE_CALLER_KEEP_MARKER} <reason>` on the line above it."
-        )
+        if not main_source and line.endswith(METHOD_VISIBILITY_TAG):
+            continue
+        reports.append(line)
     return reports
 
 
@@ -363,7 +353,7 @@ def main():
     try:
         classpath = resolve_classpath(pom_text)
         violations = violation_lines(run_checkstyle(classpath, path), path)
-        helpers = new_single_caller_helpers(classpath, path)
+        methods = new_method_violations(classpath, path)
     except ClasspathUnavailable as error:
         if already_warned(event):
             return 0
@@ -376,11 +366,11 @@ def main():
             f"checkstyle on {os.path.basename(path)} (ai-workspace hook, same configuration as the "
             f"Ixdar build):\n{reported}\nFix these now; the build fails on them."
         )
-    if helpers:
-        reported = "\n".join(f"  {line}" for line in helpers)
+    if methods:
+        reported = "\n".join(f"  {line}" for line in methods)
         sections.append(
-            f"new single-caller helpers in {os.path.basename(path)} (edit-time only; the build "
-            f"does not check this):\n{reported}"
+            f"new methods in {os.path.basename(path)} (edit-time only; the build does not check "
+            f"these, but fix them now):\n{reported}"
         )
     if sections:
         block("\n\n".join(sections))
