@@ -23,7 +23,7 @@ positional arguments:
     stats     Print wall time by activity, thinking pauses, slow calls, errors
               and repeated command shapes.
     wt        abort, archive, commit, continue, done, launch-add, launch-list,
-              new, status, sync
+              new, stage-moves, status, sync
 
 options:
   -h, --help  show this help message and exit
@@ -65,9 +65,13 @@ would close. ``code -r`` is used only when it will reach that window (the only w
 last active one); otherwise the output says which window to switch. Whatever the extension
 wrote back meanwhile is cleared once more after the rebuild.
 
+If git cannot delete the folder because the editor keeps writing into it, the land goes on:
+git's record of the worktree is dropped, and the branch, the DONE mark and the rebuild still
+happen; the folder is cleared at the end.
+
 Run on a folder git no longer has a worktree for (already landed, but an editor kept writing
-into it, or the shell still sits in the deleted directory), it only finishes the cleanup:
-VS Code off it, folder deleted.
+into it, or the shell still sits in the deleted directory), it finishes the cleanup: a branch
+already in the main branch is deleted, its ticket marked DONE, VS Code moved off, folder deleted.
 
 A sync that stopped on conflicts is finished here when the markers are gone, so resolving the
 files and running this one command is the whole recovery; it refuses, naming the files, while
@@ -125,14 +129,45 @@ options:
 ```
 ## ixd review
 ```
-usage: ixd review [-h] [--no-editor] [ticket]
+usage: ixd review [-h] [--no-editor] [--page-only] [ticket]
 
 Open a ticket's page in the browser and its worktree in VS Code, or pick one in REVIEW.
 
-The page shows the whole ticket (description, definition of done, testing plan, todos,
-unknowns, related files, dependencies with their titles) and, when the ticket has a worktree,
-its branch, changed files, F5 launch entry, the screenshots under ``tmp/`` and the last agent
-note. It is written to ``~/.cache/ixd/review/<ID>.html`` and carries buttons that open the
+The page answers why, what, where and how fast before any diff is opened, in this order:
+
+- Open decisions: the ticket's unresolved ``unknowns``, in a highlighted box.
+- Context: the ticket's ``review-summary`` (what changed and why it is needed, at most 50
+  words in 3 sentences, which ``generate_board.py`` enforces; set with ``generate_board.py update ID
+  --review-summary @FILE``; a highlighted box says so when it is missing), the repo-plan phase
+  the description names, the branch this worktree is stacked on and the open tickets stacked
+  on it (links to their review pages), blocked-by / blocks, and the rulings paragraph.
+- Boundaries that changed: .java classes added, deleted and moved (old -> new package), and
+  public/protected declarations the diff adds or removes. The diff runs from the change's
+  start (the stack fork, or the merge base with its base branch) to the working tree,
+  untracked files included, as ``stage-moves`` reads it.
+- Files to read first: ranked by changed lines that are not mechanical (``stage-moves``'
+  rules: renames, imports naming a moved class, comment-only Java files), each a VS Code link
+  opening the file at its first real hunk; mechanical-only and deleted files listed apart.
+- Measurements: ``tmp/<ticket-lowercase>-measurements.json`` in the worktree, as a
+  before/after table with percent change, regressions highlighted. The schema::
+
+      {"measurements": [{"suite": "quad-suite", "item": "buddha", "metric": "seamless",
+                         "unit": "ms", "before": 3520, "after": 3384,
+                         "lower_is_better": true, "note": "median of 4"}],
+       "tests": {"command": "mvn test", "run": 538, "failed": 0},
+       "tolerance_percent": 0, "notes": "how and where it was measured"}
+
+  ``before``/``after`` are numbers, or strings (fingerprints) compared for equality;
+  ``lower_is_better`` is true, false, or null for a value with no better direction; a
+  change the wrong way by more than ``tolerance_percent`` is a regression. ``tests`` may be
+  a list. A bare list is read as ``measurements``.
+- Verification: the F5 launch entry, the test counts from the measurements file and the
+  screenshots under ``tmp/`` as thumbnails.
+- Definition of done and todos; then, collapsed, the worktree (branch, uncommitted files, last
+  agent note), changes made, the raw description, testing plan, related files and the JSON.
+
+A ticket with no worktree still renders, without the sections read from the diff and tmp/.
+The page is written to ``~/.cache/ixd/review/<ID>.html`` and carries buttons that open the
 worktree and the ticket JSON in VS Code. The worktree is opened with ``code <folder>``, which
 focuses the window already showing it and opens a new one otherwise.
 
@@ -152,6 +187,8 @@ positional arguments:
 options:
   -h, --help   show this help message and exit
   --no-editor  open only the page, leaving VS Code alone
+  --page-only  write the page and print its path; open no browser or editor,
+               move no window
 ```
 ## ixd setup
 ```
@@ -245,7 +282,7 @@ options:
 usage: ixd wt [-h] subcommand ...
 
 wt: abort, archive, commit, continue, done, launch-add, launch-list, new,
-status, sync
+stage-moves, status, sync
 
 positional arguments:
   subcommand
@@ -267,6 +304,9 @@ positional arguments:
                scene arguments.
     new        Create the worktree and branch off the main branch, seed it,
                and print the agent brief.
+    stage-moves
+               Uncommit the change, stage its move hunks, and leave every code
+               hunk unstaged for review.
     status     Show the branch, its refs, the changed files, added
                diagnostics, and the last agent note.
     sync       Rebase the uncommitted change onto the main branch and leave it
@@ -419,7 +459,9 @@ options:
 ```
 ### ixd wt new
 ```
-usage: ixd wt new [-h] [--repo {Ixdar,ixdar-tickets,ai-workspace}] ticket
+usage: ixd wt new [-h] [--repo {Ixdar,ixdar-tickets,ai-workspace}]
+                  [--base BASE]
+                  ticket
 
 Create the worktree and branch off the main branch, seed it, and print the agent brief.
 
@@ -427,6 +469,12 @@ The branch takes the ticket's name, which is how `ixd wt done` and `ixd land` fi
 mark. The virtualenv is created up front so an agent's first command is not a cold install. The
 brief that is printed is everything an agent needs to start: the paths, the ticket file, the
 verbs, and what is denied.
+
+With ``--base`` the worktree is stacked on another worktree's branch instead: it starts from that
+branch's tip, and `sync`, `commit` and `done` replay onto the base rather than the main branch,
+so its diff is only its own change. The base's change must be committed (`ixd wt commit`) for
+the stacked worktree to see it. Once the base lands and its branch is gone, the stacked worktree
+replays onto the main branch again; `ixd land` refuses it while the base is still unlanded.
 
 positional arguments:
   ticket                worktree and branch name, usually the ticket id such
@@ -436,6 +484,34 @@ options:
   -h, --help            show this help message and exit
   --repo {Ixdar,ixdar-tickets,ai-workspace}
                         repository under REPO_HOME that gets the worktree
+  --base BASE           stack on this worktree branch instead of the main
+                        branch
+```
+### ixd wt stage-moves
+```
+usage: ixd wt stage-moves [-h] [worktree_name]
+
+Uncommit the change, stage its move hunks, and leave every code hunk unstaged for review.
+
+A package move touches hundreds of files with nothing but a moved path, a ``package`` line
+and ``import`` lines, which buries the few hunks that change code. This puts the change back
+in the working tree (undoing ``wt commit``, never anything below the worktree's own base) and
+stages exactly the mechanical part: renames, plus hunks whose changed lines are all
+``package``/``import`` lines or blank and whose imports name a class the change moves, plus
+the whole of every Java file whose changes are only comments, blank lines or such imports. An
+import change that names no moved class belongs to the code beside it, and so does a comment
+change in a file that also changes code. ``git diff --cached`` then shows the mechanical part
+and ``git diff`` (with untracked new files) shows the code to read.
+
+A worktree stacked on this one keeps working: its history still holds this change's commit,
+and ``sync`` refuses to replay it until this worktree is committed again or landed.
+
+positional arguments:
+  worktree_name  worktree path or bare name, defaulting to the one holding the
+                 current directory
+
+options:
+  -h, --help     show this help message and exit
 ```
 ### ixd wt status
 ```
@@ -459,17 +535,22 @@ options:
 ```
 ### ixd wt sync
 ```
-usage: ixd wt sync [-h] [worktree_name]
+usage: ixd wt sync [-h] [--base BASE] [worktree_name]
 
 Rebase the uncommitted change onto the main branch and leave it uncommitted again.
 
 Work is never lost: the change is parked in a temporary commit, replayed, then unpacked. A real
 conflict leaves the rebase in progress with the files listed, for `continue` or `abort`.
 
-When the tree moved, it is compiled and Maven's classes are copied over the IDE's
-``target-ide/``: VS Code compiles the annotation registries Maven generates rather than
-generating its own, so without this F5 runs registries missing whatever master added. A failed
-build leaves the sync in place and exits 1.
+A worktree stacked with ``wt new --base`` replays onto its base branch instead. ``--base``
+stacks an existing worktree the same way: only its own change moves onto the base's tip, and
+later syncs keep it there until the base lands.
+
+Afterwards the tree is compiled and Maven's classes are copied over the IDE's ``target-ide/``,
+also when it was already on top of the main branch: VS Code compiles the annotation registries
+Maven generates rather than generating its own, and its own build can lag the latest edits, so
+without this F5 runs registries missing whatever master added, or classes older than the
+source. A failed build leaves the sync in place and exits 1.
 
 positional arguments:
   worktree_name  worktree path or bare name, defaulting to the one holding the
@@ -477,4 +558,5 @@ positional arguments:
 
 options:
   -h, --help     show this help message and exit
+  --base BASE    stack this worktree on that worktree branch from now on
 ```

@@ -16,7 +16,7 @@ from pathlib import Path
 PROJECTS = Path.home() / ".claude" / "projects"
 
 CATEGORIES = [
-    ("scene run/restart/wait", r"run-scene|shutdown|/health|ixdar-cli health"),
+    ("scene run/restart/wait", r"run-scene|shutdown|stop-scene|/health|ixdar-cli health"),
     ("build/test", r"\bmvn\b|teavm|pytest|unittest|checkstyle"),
     (
         "scene drive (hover/click/key/screenshot)",

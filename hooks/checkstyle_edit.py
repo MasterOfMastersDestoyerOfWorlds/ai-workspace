@@ -17,12 +17,20 @@ which is how a helper used to dodge the single-caller check). Here the pass is i
 method declared on a line the file's uncommitted diff adds is reported, so new code is caught when
 it is written and old code stays quiet. There is no opt-out comment. The visibility rule applies
 only under src/main/java, matching the build, which does not check test sources.
+
+SingleCallerHelperCheck sees one file and so only private methods; on 2026-10-06 two agents made a
+one-caller helper public so a test could call it. A third pass covers that: every public method a
+main source adds is looked up across the checkout's src/main/java trees by name, and one with one
+call site or none there is reported. Test sources are not searched, so test calls never count.
+The lookup is by name, so an overload or a same-named method elsewhere can hide a real single
+caller; methods carrying an annotation (@Override and the framework hooks) are skipped.
 """
 
 import os
 import re
 import subprocess
 import sys
+import tempfile
 
 HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -72,6 +80,22 @@ VIOLATION_POSITION = re.compile(r"^[^:]+:(?P<line>\d+):")
 METHOD_VISIBILITY_TAG = "[MethodVisibility]"
 
 MAIN_SOURCE_SEGMENT = os.path.join("src", "main", "java") + os.sep
+
+PUBLIC_METHOD = re.compile(
+    r"^\s*public\s+(?:(?:static|final|synchronized|native|abstract|default)\s+)*"
+    r"(?:<[^>]*>\s+)?[\w.$<>\[\],? ]+?\s+(?P<name>[a-zA-Z_$][\w$]*)\s*\("
+)
+
+ANNOTATION_LINE = re.compile(r"^\s*@\w")
+
+# Declarations look like `<type> name(`; anything else naming `name(` or `::name` is a use.
+DECLARATION_OF_TEMPLATE = (
+    r"^\s*(?:(?:public|private|protected|static|final|synchronized|abstract|native|default)\s+)*"
+    r"(?:<[^>]*>\s+)?(?!(?:return|new|throw|else|case|yield)\b)[\w$][\w.$<>\[\],? ]*?\s+{0}\s*\("
+)
+
+# POSIX extended syntax, shared by grep -E and Python: no (?:...) groups.
+CALL_OF_TEMPLATE = r"\b{0}\s*\(|::\s*{0}\b"
 
 DIFF_HUNK = re.compile(r"^@@ -\S+ \+(?P<start>\d+)(?:,(?P<count>\d+))? @@")
 
@@ -266,7 +290,9 @@ def run_checkstyle(classpath, path, configuration=CHECKSTYLE_CONFIGURATION):
 def added_lines(path):
     """Returns the line numbers the file's uncommitted diff adds, or None when all of it is new.
 
-    In an Ixdar worktree HEAD is the master tip, so this is exactly the proposed change.
+    In an Ixdar worktree HEAD is the base tip, so this is exactly the proposed change. An untracked
+    file that git sees as a rename of a file the change deletes (a class moved to another package)
+    counts only the lines the move changed, so existing helpers are not reported as new.
     """
     directory = os.path.dirname(os.path.abspath(path))
     try:
@@ -277,7 +303,7 @@ def added_lines(path):
             check=False,
         )
         if tracked.returncode != 0:
-            return None
+            return moved_file_added_lines(directory, path)
         diff = subprocess.run(
             ["git", "-C", directory, "diff", "-U0", "HEAD", "--", path],
             capture_output=True,
@@ -286,8 +312,46 @@ def added_lines(path):
         )
     except (OSError, subprocess.SubprocessError):
         return set()
+    return hunk_lines(diff.stdout.splitlines())
+
+
+def moved_file_added_lines(directory, path):
+    """The added lines of an untracked file that is a rename, or None when it is genuinely new.
+
+    The working tree is staged into a scratch index so the real index is untouched, then diffed
+    against HEAD with rename detection.
+    """
+    toplevel = subprocess.run(
+        ["git", "-C", directory, "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False
+    ).stdout.strip()
+    relative = os.path.relpath(os.path.abspath(path), toplevel)
+    with tempfile.TemporaryDirectory() as scratch:
+        env = {**os.environ, "GIT_INDEX_FILE": os.path.join(scratch, "index")}
+        for step in (["read-tree", "HEAD"], ["add", "-A", "--", "*.java"]):
+            subprocess.run(["git", "-C", toplevel, *step], env=env, capture_output=True, check=False)
+        diff = subprocess.run(
+            ["git", "-C", toplevel, "diff", "--cached", "-M", "--no-prefix", "-U0", "HEAD", "--", "*.java"],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.splitlines()
+    section = []
+    for raw in diff:
+        if raw.startswith("diff --git "):
+            if section and f"rename to {relative}" in section:
+                return hunk_lines(section)
+            section = []
+        section.append(raw)
+    if section and f"rename to {relative}" in section:
+        return hunk_lines(section)
+    return None
+
+
+def hunk_lines(diff_lines):
+    """The new-file line numbers covered by the hunks of a ``-U0`` diff."""
     lines = set()
-    for raw in diff.stdout.splitlines():
+    for raw in diff_lines:
         match = DIFF_HUNK.match(raw)
         if match:
             start = int(match.group("start"))
@@ -316,6 +380,79 @@ def new_method_violations(classpath, path):
         if not main_source and line.endswith(METHOD_VISIBILITY_TAG):
             continue
         reports.append(line)
+    return reports
+
+
+def public_single_caller_violations(root, path):
+    """Returns the public methods this change adds that main code calls from one place or none."""
+    if MAIN_SOURCE_SEGMENT not in os.path.abspath(path):
+        return []
+    try:
+        with open(path, encoding="utf-8") as handle:
+            source = handle.read().splitlines()
+    except OSError:
+        return []
+    added = added_lines(path)
+    candidates = []
+    for number, line in enumerate(source, start=1):
+        if added is not None and number not in added:
+            continue
+        match = PUBLIC_METHOD.match(line)
+        if match is None or match.group("name") == "main" or " class " in line:
+            continue
+        previous = number - 2
+        while previous >= 0 and (
+            not source[previous].strip() or source[previous].strip().startswith(("*", "/"))
+        ):
+            previous -= 1
+        if previous >= 0 and ANNOTATION_LINE.match(source[previous]):
+            continue
+        candidates.append((number, match.group("name")))
+    if not candidates:
+        return []
+    main_trees = [
+        os.path.join(directory, "src", "main", "java")
+        for directory in [root] + [os.path.join(root, entry) for entry in sorted(os.listdir(root))]
+        if os.path.isdir(os.path.join(directory, "src", "main", "java"))
+    ]
+    reports = []
+    for number, name in candidates:
+        try:
+            found = subprocess.run(
+                ["grep", "-rHE", "--include=*.java", CALL_OF_TEMPLATE.format(name), *main_trees],
+                capture_output=True,
+                text=True,
+                timeout=CHECKSTYLE_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        # grep exits 1 for no match and 2 for an error; an error must not read as "no callers".
+        if found.returncode > 1:
+            continue
+        declaration = re.compile(DECLARATION_OF_TEMPLATE.format(re.escape(name)))
+        call = re.compile(CALL_OF_TEMPLATE.format(re.escape(name)))
+        # A public method another class calls is an API, whatever its caller count; the case
+        # reported is a helper only its own file uses, made public for a test or for nothing.
+        own_file = os.path.realpath(path)
+        own_calls = 0
+        other_calls = 0
+        for hit in found.stdout.splitlines():
+            source_file, _, text = hit.partition(":")
+            if declaration.match(text):
+                continue
+            count = len(call.findall(text))
+            if os.path.realpath(source_file) == own_file:
+                own_calls += count
+            else:
+                other_calls += count
+        if other_calls == 0 and own_calls <= 1:
+            where = "one call site, in its own file" if own_calls == 1 else "no call site"
+            reports.append(
+                f"{os.path.basename(path)}:{number}: public '{name}()' has {where}, in main "
+                f"sources (tests do not count): inline it at its caller, or delete it; a test is "
+                f"no reason to make a helper public. [PublicSingleCaller]"
+            )
     return reports
 
 
@@ -353,7 +490,7 @@ def main():
     try:
         classpath = resolve_classpath(pom_text)
         violations = violation_lines(run_checkstyle(classpath, path), path)
-        methods = new_method_violations(classpath, path)
+        methods = new_method_violations(classpath, path) + public_single_caller_violations(root, path)
     except ClasspathUnavailable as error:
         if already_warned(event):
             return 0

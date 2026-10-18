@@ -137,7 +137,8 @@
       "Bash(uv run ixd docs*)",
       "Bash(uv run python -m ixd.cli wt *)",
       "Bash(uv run python -m ixd.cli stats*)",
-      "Bash(uv run python -m ixd.cli docs*)"
+      "Bash(uv run python -m ixd.cli docs*)",
+      "Bash(uv run python generate_board.py *)"
     ],
     "additionalDirectories": [
       "../Ixdar",

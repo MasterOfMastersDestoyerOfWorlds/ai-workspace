@@ -1,7 +1,6 @@
 """Open a ticket for review: its page in the browser and its worktree in VS Code."""
 
 import json
-import os
 import shutil
 import webbrowser
 from pathlib import Path
@@ -80,11 +79,15 @@ def review_tickets():
 
 
 def worktree_of(ticket_id, ticket):
-    """The ticket's worktree under its repo's ``.claude/worktrees`` (or Ixdar's), or None."""
+    """The ticket's worktree under its repo's ``.claude/worktrees`` (or Ixdar's), or None.
+
+    A directory without a ``.git`` entry is what an editor leaves after ``land`` removed the
+    worktree, so it does not count.
+    """
     repos = [ticket.get("repo") or "Ixdar", "Ixdar"]
     for repo in repos:
         candidate = worktree.CODE_ROOT / repo / ".claude" / "worktrees" / ticket_id.lower()
-        if candidate.is_dir():
+        if (candidate / ".git").exists():
             return candidate
     return None
 
@@ -110,12 +113,6 @@ def choose():
         entries.append(entry)
     index = menu.pick(entries)
     return None if index is None else tickets[index][0]
-
-
-def page_path(ticket_id):
-    """Where the ticket's page is written: ``$XDG_CACHE_HOME/ixd/review/<ID>.html``."""
-    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
-    return cache / "ixd" / "review" / f"{ticket_id}.html"
 
 
 def focus_editor(path):
@@ -168,13 +165,46 @@ def arrange(page, path):
 
 
 @cli_command
-def review(ticket: Annotated[str, CliOption(positional=True)] = "", no_editor: bool = False) -> int:
+def review(
+    ticket: Annotated[str, CliOption(positional=True)] = "", no_editor: bool = False, page_only: bool = False
+) -> int:
     """Open a ticket's page in the browser and its worktree in VS Code, or pick one in REVIEW.
 
-    The page shows the whole ticket (description, definition of done, testing plan, todos,
-    unknowns, related files, dependencies with their titles) and, when the ticket has a worktree,
-    its branch, changed files, F5 launch entry, the screenshots under ``tmp/`` and the last agent
-    note. It is written to ``~/.cache/ixd/review/<ID>.html`` and carries buttons that open the
+    The page answers why, what, where and how fast before any diff is opened, in this order:
+
+    - Open decisions: the ticket's unresolved ``unknowns``, in a highlighted box.
+    - Context: the ticket's ``review-summary`` (what changed and why it is needed, at most 50
+      words in 3 sentences, which ``generate_board.py`` enforces; set with ``generate_board.py update ID
+      --review-summary @FILE``; a highlighted box says so when it is missing), the repo-plan phase
+      the description names, the branch this worktree is stacked on and the open tickets stacked
+      on it (links to their review pages), blocked-by / blocks, and the rulings paragraph.
+    - Boundaries that changed: .java classes added, deleted and moved (old -> new package), and
+      public/protected declarations the diff adds or removes. The diff runs from the change's
+      start (the stack fork, or the merge base with its base branch) to the working tree,
+      untracked files included, as ``stage-moves`` reads it.
+    - Files to read first: ranked by changed lines that are not mechanical (``stage-moves``'
+      rules: renames, imports naming a moved class, comment-only Java files), each a VS Code link
+      opening the file at its first real hunk; mechanical-only and deleted files listed apart.
+    - Measurements: ``tmp/<ticket-lowercase>-measurements.json`` in the worktree, as a
+      before/after table with percent change, regressions highlighted. The schema::
+
+          {"measurements": [{"suite": "quad-suite", "item": "buddha", "metric": "seamless",
+                             "unit": "ms", "before": 3520, "after": 3384,
+                             "lower_is_better": true, "note": "median of 4"}],
+           "tests": {"command": "mvn test", "run": 538, "failed": 0},
+           "tolerance_percent": 0, "notes": "how and where it was measured"}
+
+      ``before``/``after`` are numbers, or strings (fingerprints) compared for equality;
+      ``lower_is_better`` is true, false, or null for a value with no better direction; a
+      change the wrong way by more than ``tolerance_percent`` is a regression. ``tests`` may be
+      a list. A bare list is read as ``measurements``.
+    - Verification: the F5 launch entry, the test counts from the measurements file and the
+      screenshots under ``tmp/`` as thumbnails.
+    - Definition of done and todos; then, collapsed, the worktree (branch, uncommitted files, last
+      agent note), changes made, the raw description, testing plan, related files and the JSON.
+
+    A ticket with no worktree still renders, without the sections read from the diff and tmp/.
+    The page is written to ``~/.cache/ixd/review/<ID>.html`` and carries buttons that open the
     worktree and the ticket JSON in VS Code. The worktree is opened with ``code <folder>``, which
     focuses the window already showing it and opens a new one otherwise.
 
@@ -189,6 +219,7 @@ def review(ticket: Annotated[str, CliOption(positional=True)] = "", no_editor: b
 
     :param ticket: ticket id such as ``craw-29``; omit it to choose from the tickets in REVIEW
     :param no_editor: open only the page, leaving VS Code alone
+    :param page_only: write the page and print its path; open no browser or editor, move no window
     """
     ticket_id = ticket or choose()
     if not ticket_id:
@@ -199,10 +230,12 @@ def review(ticket: Annotated[str, CliOption(positional=True)] = "", no_editor: b
         raise SystemExit(f"no ticket {ticket_id} under {worktree.TICKET_REPO}/content or done")
     data = json.loads(ticket_path.read_text(encoding="utf-8"))
     path = worktree_of(ticket_id, data)
-    page = page_path(ticket_id)
+    page = review_page.page_path(ticket_id)
     page.parent.mkdir(parents=True, exist_ok=True)
     page.write_text(review_page.render(data, ticket_path, path), encoding="utf-8")
     print(f"== page: {page}")
+    if page_only:
+        return 0
     if path is None:
         print(f"== VS Code: {ticket_id} has no worktree")
     if desktop.available():

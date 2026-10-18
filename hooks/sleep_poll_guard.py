@@ -30,6 +30,14 @@ SLEEP_CHAIN = re.compile(
     r"(?:^|[\s;&|(])sleep\s+[0-9.]+\s*(?:;|&&|\|\||\|)\s*\S" r"|(?:;|&&|\|\|)\s*sleep\s+[0-9.]+"
 )
 
+# A command that blocks until something else happens: following a file or a process, or waiting
+# for a filesystem event. An agent left two of these (`timeout 1800 tail -n0 -f <log>` and
+# `timeout 1500 tail --pid=<pid> -f /dev/null`) blocked for over 20 minutes on 2026-10-04.
+BLOCKING_WAIT = re.compile(
+    r"(?:^|[\s;&|(])tail\s(?:[^;&|]*\s)?(?:-[a-zA-Z]*[fF][a-zA-Z]*|--follow\S*|--pid\S*)(?=\s|$)"
+    r"|(?:^|[\s;&|(])inotifywait\s"
+)
+
 # The harness writes a background command's output under <session>/tasks/<id>.output.
 TASK_OUTPUT = re.compile(r"tasks/[^\s'\"]*\.output|claude-[0-9]+/[^\s'\"]*/tasks\b")
 
@@ -50,6 +58,8 @@ def find_violation(command):
         return f"a {loop.group(1)} loop polls with a fixed sleep"
     if SLEEP_CHAIN.search(masked):
         return "a sleep is chained with another command as a fixed wait"
+    if BLOCKING_WAIT.search(masked):
+        return "the command blocks following a file or process (tail -f, tail --pid, inotifywait)"
     if TASK_OUTPUT.search(masked):
         return "the command reads the harness task-output directory"
     return None

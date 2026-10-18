@@ -23,12 +23,15 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 from .paths import repo_home
 
-TMP_EXCLUDE = ":(exclude)tmp"
 PARK_MESSAGE = "ixd wt: parked working tree (temporary)"
+# git config keys under branch.<name> recording a stacked worktree's base branch and fork commit.
+BASE_KEY = "ixdbase"
+FORK_KEY = "ixdfork"
 CODE_ROOT = repo_home()
 TICKET_REPO = CODE_ROOT / "ixdar-tickets"
 TRANSCRIPT_ROOT = Path.home() / ".claude" / "projects"
@@ -217,7 +220,32 @@ def resolve_worktree(path, allow_rebase=False):
     main_branch = main_branch_of(worktree)
     if branch == main_branch:
         raise SystemExit(f"{worktree} has the main branch {main_branch!r} checked out, refusing")
-    return worktree, branch, main_branch
+    return worktree, branch, base_branch_of(worktree, branch) or main_branch
+
+
+def base_branch_of(worktree, branch):
+    """The branch a stacked worktree sits on, while that branch still exists.
+
+    ``wt new --base`` records it; once the base has landed and its branch is gone, the change
+    replays onto the main branch like any other.
+
+    :param worktree: any checkout of the repository
+    :param branch: the stacked worktree's branch
+    :return: the base branch name, or None for a worktree on the main branch
+    """
+    base = git(worktree, "config", "--get", f"branch.{branch}.{BASE_KEY}", check=False)
+    if base and git(worktree, "rev-parse", "--verify", "--quiet", f"refs/heads/{base}", check=False):
+        return base
+    return None
+
+
+def stack_fork_of(worktree, branch):
+    """The commit a stacked worktree's own change starts from, or None when it is not stacked.
+
+    It is the base's tip at the last sync, so a replay moves exactly this worktree's commits, even
+    after the base was re-committed or squash-landed under a different hash.
+    """
+    return git(worktree, "config", "--get", f"branch.{branch}.{FORK_KEY}", check=False) or None
 
 
 def main_branch_of(worktree):
@@ -232,12 +260,13 @@ def main_branch_of(worktree):
 
 
 def changed_files(worktree):
-    status = git(worktree, "status", "--porcelain", "--", ".", TMP_EXCLUDE)
+    status = git(worktree, "status", "--porcelain")
     return [line for line in status.splitlines() if line.strip()]
 
 
 def stage_all(worktree):
-    git(worktree, "add", "-A", "--", ".", TMP_EXCLUDE)
+    # tmp/ stays out through Ixdar's .gitignore; naming it in a pathspec makes git refuse the add.
+    git(worktree, "add", "-A")
     return bool(git(worktree, "diff", "--cached", "--name-only"))
 
 
@@ -794,12 +823,18 @@ def link_profiler(worktree):
     most scenes until the link exists. The script is the repository's own definition of where the
     library lives on each platform, so it is run rather than duplicated here.
 
+    A checkout whose CLI has a ``link-profiler`` command (the Python port of the script) runs that.
+
     :param worktree: the worktree directory
     """
     script = worktree / PROFILER_LINK_SCRIPT
-    if not script.exists():
+    if cli_has_command(worktree, "link-profiler"):
+        command = ["uv", "run", "ixdar-cli", "link-profiler"]
+    elif script.exists():
+        command = [str(script)]
+    else:
         return
-    result = subprocess.run([str(script)], cwd=str(worktree), capture_output=True, text=True)
+    result = subprocess.run(command, cwd=str(worktree), capture_output=True, text=True)
     if result.returncode != 0:
         reason = (result.stderr.strip().splitlines() or ["no output"])[-1]
         print(f"seed:     profiler link failed ({reason}); launch entries with the profiler will not start")
@@ -841,6 +876,13 @@ def brief_text(worktree, branch, main_branch):
         ]
     lines += [
         f'tickets:  cd {TICKET_REPO} && uv run python generate_board.py update {ticket_id} --add-changes "..."',
+        "summary:  before `wt done`, write what changed (one sentence, the class a reader knows) and why it is",
+        "          needed (one sentence), at most 50 words, no method lists, counts, measurements or decisions, to",
+        f"          tmp/{branch}-summary.txt and set it: generate_board.py update {ticket_id} --review-summary",
+        f"          @{worktree}/tmp/{branch}-summary.txt (it refuses a longer one); `ixd review` shows it first",
+        f"measure:  every before/after number you record goes in tmp/{branch}-measurements.json, which `ixd review`",
+        '          renders: {"measurements": [{"suite", "item", "metric", "unit", "before", "after",',
+        '          "lower_is_better": true|false|null, "note"}], "tests": {"command", "run", "failed"}}',
         "never:    ixd land (the user alone merges), raw git writes, editing files through the shell",
     ]
     return "\n".join(lines)
@@ -881,8 +923,10 @@ def refresh_ide_classes(worktree):
             if not built.is_dir():
                 continue
             target = ide_dir / name
+            # The IDE's language server may write into target-ide between the two calls, so the
+            # remove can leave files behind; copy over whatever is there instead of failing.
             shutil.rmtree(target, ignore_errors=True)
-            shutil.copytree(built, target)
+            shutil.copytree(built, target, dirs_exist_ok=True)
         refreshed.append(module)
     return refreshed
 
@@ -972,6 +1016,16 @@ def sync(worktree, branch, main_branch):
     :return: True when the tree moved onto newer commits, False when it was already on top
     """
     ahead, behind = ahead_behind(worktree, branch, main_branch)
+    fork = stack_fork_of(worktree, branch)
+    if fork and base_branch_of(worktree, branch):
+        tip = git(worktree, "rev-parse", main_branch)
+        rewound = subprocess.run(["git", "-C", str(worktree), "merge-base", "--is-ancestor", tip, fork])
+        if tip != git(worktree, "rev-parse", fork) and rewound.returncode == 0:
+            raise SystemExit(
+                f"{branch}: its base {main_branch} is uncommitted (`stage-moves` or a sync left its change in "
+                f"the working tree), so replaying onto it would drop that change; commit or land "
+                f"{main_branch} first"
+            )
     parked = stage_all(worktree)
     if parked:
         git(worktree, "commit", "--quiet", "--no-verify", "-m", PARK_MESSAGE)
@@ -982,8 +1036,11 @@ def sync(worktree, branch, main_branch):
             f"{branch}: already on top of {main_branch}; {len(changed_files(worktree))} file(s) uncommitted"
         )
         return False
+    # A stacked change replays only its own commits: the base's commits before the fork may have
+    # been re-committed or squash-landed under other hashes, and must not be replayed again.
+    onto = ["--onto", main_branch, fork] if fork else [main_branch]
     replay = subprocess.run(
-        ["git", "-C", str(worktree), "rebase", "--quiet", main_branch], capture_output=True, text=True
+        ["git", "-C", str(worktree), "rebase", "--quiet", *onto], capture_output=True, text=True
     )
     if replay.returncode != 0:
         conflicts = git(worktree, "diff", "--name-only", "--diff-filter=U", check=False)
@@ -1005,6 +1062,8 @@ def sync(worktree, branch, main_branch):
 def unpack(worktree, branch, main_branch):
     """Drop the replayed commits back into the working tree as an uncommitted diff on main."""
     git(worktree, "reset", "--quiet", "--mixed", main_branch)
+    if stack_fork_of(worktree, branch):
+        git(worktree, "config", f"branch.{branch}.{FORK_KEY}", git(worktree, "rev-parse", main_branch))
     changed = changed_files(worktree)
     print(
         f"{branch}: now on {main_branch} ({git(worktree, 'rev-parse', '--short', main_branch)}) "
@@ -1028,9 +1087,6 @@ def conflict_markers(worktree):
             "-l",
             "-E",
             "^(<<<<<<<|=======|>>>>>>>)( |$)",
-            "--",
-            ".",
-            TMP_EXCLUDE,
         ],
         capture_output=True,
         text=True,
@@ -1065,7 +1121,7 @@ def continue_rebase(worktree, branch, main_branch):
                 f"{branch}: {path} is unresolved and missing from the working tree; "
                 f"recreate it or run `abort`"
             )
-    git(worktree, "add", "-A", "--", ".", TMP_EXCLUDE)
+    git(worktree, "add", "-A")
     step = subprocess.run(
         ["git", "-C", str(worktree), "-c", "core.editor=true", "rebase", "--continue"],
         capture_output=True,
@@ -1117,3 +1173,135 @@ def commit(worktree, branch, main_branch, message):
         f"{branch}: one commit {git(worktree, 'rev-parse', '--short', 'HEAD')} on top of {main_branch}; "
         f"fast-forwardable"
     )
+
+
+def stage_moves(worktree, branch, main_branch):
+    """Uncommit the change and stage only its mechanical part: renames, move imports, comment-only files.
+
+    :param worktree: the worktree directory
+    :param branch: its branch
+    :param main_branch: the branch the change sits on (the base for a stacked worktree)
+    """
+    if rebase_in_progress(worktree):
+        raise SystemExit(f"{branch} has a sync in progress; run `continue` or `abort` first")
+    start = stack_fork_of(worktree, branch) or git(worktree, "merge-base", "HEAD", main_branch)
+    ancestor = subprocess.run(["git", "-C", str(worktree), "merge-base", "--is-ancestor", start, "HEAD"])
+    if ancestor.returncode != 0:
+        raise SystemExit(f"{branch}: its start commit {start[:8]} is not below HEAD; run `sync` first")
+    if git(worktree, "rev-parse", "HEAD") != start:
+        git(worktree, "reset", "--quiet", "--mixed", start)
+    with tempfile.TemporaryDirectory() as scratch:
+        env = {**os.environ, "GIT_INDEX_FILE": str(Path(scratch) / "index")}
+        for step in (["read-tree", "HEAD"], ["add", "-A"]):
+            subprocess.run(["git", "-C", str(worktree), *step], env=env, capture_output=True, check=True)
+        full = subprocess.run(
+            ["git", "-C", str(worktree), "diff", "--cached", "-M", "-U0", "--no-color", "HEAD"],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        moves, renamed, hunks, comment_files = move_patch(full)
+        git(worktree, "read-tree", "HEAD")
+        patch = Path(scratch) / "moves.patch"
+        patch.write_text(moves, encoding="utf-8")
+        if moves:
+            applied = subprocess.run(
+                ["git", "-C", str(worktree), "apply", "--cached", "--unidiff-zero", str(patch)],
+                capture_output=True,
+                text=True,
+            )
+            if applied.returncode != 0:
+                git(worktree, "read-tree", "HEAD")
+                raise SystemExit(
+                    f"{branch}: staging the moves failed, nothing staged:\n{applied.stderr.strip()}"
+                )
+    unstaged = git(worktree, "diff", "--name-only").splitlines()
+    untracked = git(worktree, "ls-files", "--others", "--exclude-standard").splitlines()
+    print(
+        f"{branch}: uncommitted on {git(worktree, 'rev-parse', '--short', 'HEAD')}; staged {renamed} rename(s) "
+        f"and {hunks} package/import hunk(s), plus {comment_files} comment-only file(s); left for review: {len(unstaged)} changed file(s), "
+        f"{len(untracked)} new file(s)"
+    )
+
+
+MOVE_LINE = re.compile(r"^\s*(?:(package|import)(?:\s+static)?\s+([\w.]+?)(\.\*)?\s*;)?\s*$")
+
+COMMENT_LINE = re.compile(r"^\s*(?://|/\*|\*|$)")
+
+
+def move_patch(diff):
+    """The part of a ``-M -U0`` diff that is mechanical: renames, hunks touching only package/import
+    lines whose imports name a class the diff moves, and every hunk of a Java file whose changes are
+    all comments, blank lines or such imports.
+
+    An import change that names no moved class goes with the code beside it, and so does a comment
+    change in a file that also changes code.
+
+    :param diff: the full diff
+    :return: (patch text, renames kept, hunks kept, comment-only files kept)
+    """
+    sections = [s for s in re.split(r"(?m)^(?=diff --git )", diff) if s.startswith("diff --git ")]
+    moved = re.findall(r"(?m)^rename (?:from|to) (.+)\.java$", diff)
+    moved_classes = {Path(path).name for path in moved}
+    moved_dirs = {str(Path(path).parent) for path in moved}
+
+    def follows_move(line):
+        match = MOVE_LINE.match(line)
+        if not match:
+            return False
+        keyword, name, wildcard = match.groups()
+        if keyword != "import":
+            return True
+        if wildcard:
+            return any(directory.endswith(name.replace(".", "/")) for directory in moved_dirs)
+        return any(segment in moved_classes for segment in name.split("."))
+
+    def changed(hunk):
+        return [line[1:] for line in hunk[1:] if line[:1] in "+-"]
+
+    out = []
+    renamed = kept_hunks = comment_files = 0
+    for section in sections:
+        lines = section.splitlines()
+        first_hunk = next((i for i, line in enumerate(lines) if line.startswith("@@")), len(lines))
+        header, body = lines[:first_hunk], lines[first_hunk:]
+        is_rename = any(line.startswith("rename from ") for line in header)
+        if any(
+            line.startswith(("new file mode", "deleted file mode", "Binary files", "GIT binary"))
+            for line in header
+        ):
+            if not is_rename:
+                continue
+        hunks, current = [], None
+        for line in body:
+            if line.startswith("@@"):
+                current = [line]
+                hunks.append(current)
+            elif current is not None:
+                current.append(line)
+        mechanical = [
+            hunk
+            for hunk in hunks
+            if moved and all(map(follows_move, changed(hunk))) and any(line.strip() for line in changed(hunk))
+        ]
+        comment_only = (
+            header[0].endswith(".java")
+            and hunks
+            and len(mechanical) < len(hunks)
+            and all(hunk in mechanical or all(map(COMMENT_LINE.match, changed(hunk))) for hunk in hunks)
+        )
+        if comment_only:
+            mechanical = hunks
+            comment_files += 1
+        if not is_rename and not mechanical:
+            continue
+        keep_header = [line for line in header if not line.startswith("index ")]
+        if not mechanical:
+            keep_header = [line for line in keep_header if not line.startswith(("--- ", "+++ "))]
+        out.extend(keep_header)
+        for hunk in mechanical:
+            out.extend(hunk)
+        renamed += is_rename
+        kept_hunks += 0 if comment_only else len(mechanical)
+    return ("\n".join(out) + "\n") if out else "", renamed, kept_hunks, comment_files

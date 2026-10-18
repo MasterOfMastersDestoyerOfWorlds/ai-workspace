@@ -7,8 +7,10 @@ and still reports success, and the change never reaches the diff the user review
 `assert old in s`. Published numbers agree: bash-only editing scored 28 percent on SWE-bench
 Pro against 51 percent with a string-replace tool.
 
-The Edit and Write tools fail loudly instead, so this hook sends the model to them. Writing to
-a tmp or scratchpad path through the shell stays allowed.
+The Edit and Write tools fail loudly instead, so this hook sends the model to them. They are
+also the only edits `checkstyle_edit.py` sees: a shell edit skips the edit-time audit, and with
+it SingleCallerHelperCheck, which the build leaves off. Writing to a tmp or scratchpad path
+through the shell stays allowed.
 """
 
 import os

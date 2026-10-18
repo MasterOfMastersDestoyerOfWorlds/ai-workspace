@@ -9,10 +9,12 @@ Only added lines of ``.java`` files count: a line the diff removes or leaves alo
 business, not this change's.
 """
 
+import os
 import re
+import subprocess
+import tempfile
 from dataclasses import dataclass
-
-from .worktree import TMP_EXCLUDE, git
+from pathlib import Path
 
 LOG_CALL = re.compile(r"\bPlatforms\.log\(|\bSystem\.(?:out|err)\.print|\.printStackTrace\(")
 STRING_LITERAL = re.compile(r'"((?:[^"\\]|\\.)*)"')
@@ -41,30 +43,26 @@ class Finding:
 def added_java_lines(worktree):
     """Every line the change adds to a ``.java`` file, as {path: [(line number, text), ...]}.
 
-    Tracked files are diffed against HEAD, which ``sync`` keeps on the main branch; untracked
-    files count as added in full.
+    The whole working tree, untracked files included, is staged into a scratch index and diffed
+    against HEAD (which ``sync`` keeps on the base branch) with rename detection. A file moved to a
+    new package is untracked until it lands, and would otherwise count as added in full, reporting
+    every log line it already had; as a rename only the lines the move changed count.
 
     :param worktree: the worktree directory
     :return: the added lines per repository-relative path
     """
-    diff = git(
-        worktree,
-        "diff",
-        "--no-prefix",
-        "--no-color",
-        "-U0",
-        "HEAD",
-        "--",
-        "*.java",
-        TMP_EXCLUDE,
-        check=False,
-    )
-    added = parse_added_lines(diff)
-    untracked = git(worktree, "ls-files", "--others", "--exclude-standard", "--", "*.java", TMP_EXCLUDE)
-    for relative in untracked.splitlines():
-        text = (worktree / relative).read_text(encoding="utf-8", errors="replace")
-        added[relative] = list(enumerate(text.splitlines(), start=1))
-    return added
+    with tempfile.TemporaryDirectory() as scratch:
+        env = {**os.environ, "GIT_INDEX_FILE": str(Path(scratch) / "index")}
+        for step in (["read-tree", "HEAD"], ["add", "-A", "--", "*.java"]):
+            subprocess.run(["git", "-C", str(worktree), *step], env=env, capture_output=True, check=True)
+        diff = subprocess.run(
+            ["git", "-C", str(worktree), "diff", "--cached", "-M", "--no-prefix", "--no-color", "-U0", "HEAD"]
+            + ["--", "*.java"],
+            env=env,
+            capture_output=True,
+            text=True,
+        ).stdout
+    return parse_added_lines(diff)
 
 
 def parse_added_lines(diff):

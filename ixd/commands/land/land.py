@@ -41,9 +41,13 @@ def land(
     last active one); otherwise the output says which window to switch. Whatever the extension
     wrote back meanwhile is cleared once more after the rebuild.
 
+    If git cannot delete the folder because the editor keeps writing into it, the land goes on:
+    git's record of the worktree is dropped, and the branch, the DONE mark and the rebuild still
+    happen; the folder is cleared at the end.
+
     Run on a folder git no longer has a worktree for (already landed, but an editor kept writing
-    into it, or the shell still sits in the deleted directory), it only finishes the cleanup:
-    VS Code off it, folder deleted.
+    into it, or the shell still sits in the deleted directory), it finishes the cleanup: a branch
+    already in the main branch is deleted, its ticket marked DONE, VS Code moved off, folder deleted.
 
     A sync that stopped on conflicts is finished here when the markers are gone, so resolving the
     files and running this one command is the whole recovery; it refuses, naming the files, while
@@ -66,6 +70,9 @@ def land(
         clean_up_leftover(*leftover)
         return 0
     path, branch, main_branch = worktree.resolve_worktree(worktree_name, allow_rebase=True)
+    base = worktree.base_branch_of(path, branch)
+    if base:
+        raise SystemExit(f"{branch} is stacked on {base}, which has not landed; land {base} first")
     subject = message.strip() or default_message(branch, body)
     print(f"== landing {branch} as: {subject.splitlines()[0]}")
     main_checkout = worktree.main_checkout_of(path)
@@ -106,7 +113,7 @@ def land(
         print(f"== kept worktree {path} and branch {branch}")
     else:
         print(f"== remove worktree {path} and branch {branch}")
-        worktree.git(main_checkout, "worktree", "remove", "--force", str(path))
+        remove_worktree_record(main_checkout, path)
         worktree.git(main_checkout, "branch", "-d", branch)
         worktree.remove_leftovers(path)
 
@@ -124,11 +131,39 @@ def land(
     return 0
 
 
+def remove_worktree_record(main_checkout, path):
+    """Remove the worktree from git, tolerating a folder an editor keeps writing into.
+
+    Run from the terminal of the VS Code window that shows the worktree, ``land`` switches that
+    window away only at the very end, so the Java extension is still writing ``target-ide/`` while
+    git deletes the folder: git removes the tracked files and its own record, then fails on the
+    final directory removal with "Directory not empty". That folder is cleared at the end of
+    ``land``; the branch deletion, the DONE mark and the rebuild must not be skipped over it.
+
+    :param main_checkout: the repository's main checkout
+    :param path: the worktree directory
+    """
+    removal = subprocess.run(
+        ["git", "-C", str(main_checkout), "worktree", "remove", "--force", str(path)],
+        capture_output=True,
+        text=True,
+    )
+    if removal.returncode == 0:
+        return
+    worktree.git(main_checkout, "worktree", "prune")
+    listing = worktree.git(main_checkout, "worktree", "list", "--porcelain").splitlines()
+    if f"worktree {path}" in listing:
+        raise SystemExit(f"git worktree remove failed and git still lists {path}:\n{removal.stderr.strip()}")
+    print("== git dropped the worktree but not its folder (an editor is writing into it); cleared at the end")
+
+
 def clean_up_leftover(slot, main_checkout):
-    """Finish the cleanup of a worktree git no longer has: editor off it, folder gone.
+    """Finish a land that stopped after the merge: branch gone, ticket DONE, editor off, folder gone.
 
     Landing or removing a worktree an editor still shows leaves a folder the editor keeps writing
-    into, and a shell whose current directory was deleted. Nothing is merged or marked here.
+    into, and a shell whose current directory was deleted. A land that stopped there also left its
+    branch and an unmarked ticket; when the branch is already in the main branch, both are finished
+    here. Nothing is merged here, and an unmerged branch is left alone.
 
     :param slot: the ``.claude/worktrees/<name>`` directory
     :param main_checkout: the repository's main checkout
@@ -136,6 +171,22 @@ def clean_up_leftover(slot, main_checkout):
     branch = worktree.git(main_checkout, "show-ref", "--verify", f"refs/heads/{slot.name}", check=False)
     state = f"branch {slot.name} still exists" if branch else f"branch {slot.name} is gone"
     print(f"== {slot.name}: git has no worktree there ({state}); cleaning up what is left")
+    main_branch = worktree.git(main_checkout, "symbolic-ref", "--quiet", "--short", "HEAD", check=False)
+    merged = not branch or (
+        subprocess.run(
+            ["git", "-C", str(main_checkout), "merge-base", "--is-ancestor", slot.name, main_branch],
+            capture_output=True,
+        ).returncode
+        == 0
+    )
+    if branch and merged:
+        print(f"== {slot.name} is already in {main_branch}; deleting the branch")
+        worktree.git(main_checkout, "branch", "-d", slot.name)
+    elif branch:
+        print(f"== {slot.name} is not in {main_branch}; branch and ticket left alone")
+    ticket = worktree.ticket_for(slot.name)
+    if merged and ticket and ticket.get("status") != "DONE":
+        mark_ticket_done(slot.name)
     editor.return_to_main_checkout(slot, main_checkout)
     worktree.remove_leftovers(slot)
     if worktree.enclosing_worktree_slot(worktree.shell_directory()) == slot:

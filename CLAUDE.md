@@ -75,12 +75,6 @@ Spawn Agent-tool subagents with `model: "opus"`. Parallel Fable subagents hit th
 rate limit and were killed mid-work. When relaunching an interrupted agent, tell it to inspect
 `git status` and `git diff` in its worktree first and continue from the partial state.
 
-Keep agent contexts under about 200k tokens: past that an agent slows and loses track of its own
-earlier findings. `ixd stats --session <id>` prints every agent's current and peak context. When
-one passes the line, stop it (TaskStop) and launch a fresh agent whose brief is the ticket plus
-`ixd wt status <ticket>`, the same as a crash relaunch, rather than resuming it with SendMessage,
-which carries the whole context along. Do the same for this coordinating session with `/compact`.
-
 For Ixdar tickets, agents work in `$REPO_HOME/Ixdar/.claude/worktrees/<ticket>` on a branch
 of the same name and add a `.vscode/launch.json` entry plus screenshots under `tmp/` so the user
 can verify with F5. Git inside a worktree goes through `ixd wt` (the bare `wt` is an alias;
@@ -139,7 +133,7 @@ one file with the configuration the build uses (`checkstyle.xml` off the autofix
 classpath cached in `~/.cache/ai-workspace-hooks/`) and returns the violations in about a second,
 so JavadocDescriptionLength no longer costs a module compile. It also runs SingleCallerHelperCheck,
 which the build leaves off, incrementally: only private single-caller methods declared on lines
-the file's uncommitted diff adds are reported, and `// single-caller: <reason>` above one keeps it. `shell_edit_guard.py` runs before
+the file's uncommitted diff adds are reported; there is no opt-out. `shell_edit_guard.py` runs before
 Bash and refuses `sed -i`, `awk -i inplace`, `perl -pi`, python heredocs and `python -c` that
 write files, and `cat`, `tee` or a redirection onto a tracked source path, pointing at Edit and
 Write instead; it also refuses `cat` of four or more repository files, pointing at Read. Shell
