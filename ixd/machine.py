@@ -1,7 +1,9 @@
 """The steps `ixd setup` runs to prepare a machine.
 
   1. repositories  clone each entry of repos.json into REPO_HOME, skipping what is present
-  2. commands      uv tool install --editable . for `ixd`, and uv sync for the hook environment
+  2. commands      uv tool install --editable . for `ixd`, uv sync for the hook environment, and
+                   difftastic (`difft`), the difftool `ixd wt new` sets, from brew, winget, scoop
+                   or cargo
   3. REPO_HOME     .claude/settings.local.json for Claude sessions and hooks, and the shell profile
                    (bash, zsh, fish) or the user environment on Windows
   4. autofix       mvn install of the checkstyle artifact Ixdar's build and the edit hook need
@@ -101,6 +103,47 @@ def install_tools(dry_run):
         return
     run(["uv", "tool", "install", "--editable", "--reinstall", WORKSPACE_ROOT], dry_run=dry_run)
     run(["uv", "sync", "--project", WORKSPACE_ROOT], dry_run=dry_run)
+    install_difftastic(dry_run)
+
+
+# (package manager, install command) in the order they are tried; the first one on PATH installs.
+DIFFTASTIC_INSTALLERS = (
+    ("brew", ["brew", "install", "difftastic"]),
+    ("winget", ["winget", "install", "--exact", "--id", "Wilfred.difftastic"]),
+    ("scoop", ["scoop", "install", "difftastic"]),
+    ("cargo", ["cargo", "install", "--locked", "difftastic"]),
+)
+# Distribution packages need root, so setup prints the command instead of running it.
+DIFFTASTIC_ROOT_INSTALLERS = (
+    ("pacman", "sudo pacman -S --needed difftastic"),
+    ("dnf", "sudo dnf install difftastic"),
+    ("apt-get", "sudo apt-get install difftastic"),
+)
+
+
+def install_difftastic(dry_run):
+    """Install difftastic (``difft``), the structural diff ``ixd wt new`` makes the git difftool.
+
+    It is a Rust binary, not a Python package, so it comes from the platform's package manager:
+    Homebrew, winget or scoop, else ``cargo install``. A distribution package needs root, so for
+    pacman, dnf or apt the command is printed for the user to run.
+
+    :param dry_run: print the command without running it
+    """
+    if shutil.which("difft"):
+        print("  difftastic: installed")
+        return
+    for tool, command in DIFFTASTIC_INSTALLERS:
+        if shutil.which(tool):
+            run(command, dry_run=dry_run)
+            return
+    for tool, command in DIFFTASTIC_ROOT_INSTALLERS:
+        if shutil.which(tool):
+            print(
+                f"  difftastic: not installed; run `{command}` (needs root); worktrees made after it get it"
+            )
+            return
+    print("  difftastic: no package manager found; see https://difftastic.wilfred.me.uk/installation.html")
 
 
 def write_local_settings(home, dry_run, path=LOCAL_SETTINGS):

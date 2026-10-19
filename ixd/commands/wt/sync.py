@@ -15,7 +15,8 @@ def sync(worktree_name: Annotated[str, CliOption(positional=True)] = "", base: s
 
     A worktree stacked with ``wt new --base`` replays onto its base branch instead. ``--base``
     stacks an existing worktree the same way: only its own change moves onto the base's tip, and
-    later syncs keep it there until the base lands.
+    later syncs keep it there until the base lands. ``--base`` naming the main branch takes the
+    worktree off its stack: only its own change moves onto the main branch, and it can land at once.
 
     Afterwards the tree is compiled and Maven's classes are copied over the IDE's ``target-ide/``,
     also when it was already on top of the main branch: VS Code compiles the annotation registries
@@ -24,7 +25,7 @@ def sync(worktree_name: Annotated[str, CliOption(positional=True)] = "", base: s
     source. A failed build leaves the sync in place and exits 1.
 
     :param worktree_name: worktree path or bare name, defaulting to the one holding the current directory
-    :param base: stack this worktree on that worktree branch from now on
+    :param base: stack this worktree on that worktree branch from now on, or the main branch to unstack it
     """
     path, branch, main_branch = worktree.resolve_worktree(worktree_name)
     if base:
@@ -34,8 +35,12 @@ def sync(worktree_name: Annotated[str, CliOption(positional=True)] = "", base: s
         ):
             raise SystemExit(f"{base!r} is not another existing branch")
         fork = worktree.stack_fork_of(path, branch) or worktree.git(path, "merge-base", branch, main_branch)
-        worktree.git(path, "config", f"branch.{branch}.{worktree.BASE_KEY}", base)
         worktree.git(path, "config", f"branch.{branch}.{worktree.FORK_KEY}", fork)
+        if base == worktree.main_branch_of(path):
+            # Unstacked: the fork stays, so only this change moves, exactly as after a base lands.
+            worktree.git(path, "config", "--unset", f"branch.{branch}.{worktree.BASE_KEY}", check=False)
+        else:
+            worktree.git(path, "config", f"branch.{branch}.{worktree.BASE_KEY}", base)
         main_branch = base
     worktree.sync(path, branch, main_branch)
     return 0 if worktree.rebuild_for_ide(path) else 1

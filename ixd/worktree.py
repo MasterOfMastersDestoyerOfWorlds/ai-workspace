@@ -54,6 +54,8 @@ MIN_WORKTREE_CALLS = 5
 SUBAGENT_DIR = "subagents"
 # The model name Claude Code puts on its own interruption notices, which are not the agent talking.
 SYNTHETIC_MODEL = "<synthetic>"
+# The tool a subagent delivers its report through; its ``message`` argument is the report.
+HANDBACK_TOOL = "SubagentHandback"
 # Tools that change a file. Writing into a worktree is what only the agent working there does.
 WRITING_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
 NOTE_LINES = 8
@@ -414,13 +416,19 @@ def file_contains(path, needle, chunk_size=1 << 20):
 
 
 def last_assistant_text(path):
-    """The final assistant prose in a transcript: the agent's closing note, tool calls skipped.
+    """The agent's closing note in a transcript: its handed-back report, else its final prose.
+
+    A subagent delivers its report as the ``message`` of a ``SubagentHandback`` tool call and then
+    usually says one more line ("I've sent my report to the caller"), which is not the report, so
+    the last handback wins over any prose after it. A transcript without a handback (a session the
+    user drove, or an agent from before handbacks) closes with its last prose, tool calls skipped.
 
     The harness writes its own interruptions ("You've hit your session limit") as assistant events
     marked synthetic. Those are not the agent talking and say nothing about the work, so a killed
     agent's last real words are the note.
     """
     latest = None
+    handback = None
     try:
         with open(path, encoding="utf-8", errors="replace") as handle:
             for line in handle:
@@ -438,6 +446,12 @@ def last_assistant_text(path):
                 content = message.get("content")
                 if not isinstance(content, list):
                     continue
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        arguments = block.get("input")
+                        report = arguments.get("message") if isinstance(arguments, dict) else None
+                        if block.get("name") == HANDBACK_TOOL and isinstance(report, str) and report.strip():
+                            handback = report.strip()
                 text = " ".join(
                     block.get("text", "")
                     for block in content
@@ -447,7 +461,7 @@ def last_assistant_text(path):
                     latest = text
     except OSError:
         return None
-    return latest
+    return handback or latest
 
 
 def ticket_for(branch):
@@ -800,6 +814,7 @@ def seed_environment(worktree):
     """Create the worktree's Python virtualenv and link the profiler, so the first ixdar-cli call is
     not a cold install and a launch entry carrying the profiler agent can start."""
     link_profiler(worktree)
+    configure_difftool(worktree)
     if not (worktree / "pyproject.toml").exists():
         return
     if not shutil.which("uv"):
@@ -813,6 +828,35 @@ def seed_environment(worktree):
         print(f"seed:     uv sync failed ({reason}); run it yourself before the first ixdar-cli call")
     else:
         print(f"seed:     uv sync done in {seconds:.0f}s")
+
+
+DIFFTASTIC = "difft"
+DIFFTOOL_CONFIG = {
+    "diff.tool": "difftastic",
+    "difftool.prompt": "false",
+    "difftool.difftastic.cmd": 'difft "$LOCAL" "$REMOTE"',
+}
+
+
+def configure_difftool(worktree):
+    """Make difftastic the repository's ``git difftool`` when it is installed.
+
+    difftastic compares syntax trees, so ``git difftool`` shows a reformatted or rewrapped line as
+    unchanged and only the structural edits stand out. The setting goes in the repository's own
+    config, which every worktree of it shares; ``git diff`` itself is left alone. Without ``difft``
+    on PATH nothing is written (``ixd setup`` installs it).
+
+    :param worktree: the worktree directory
+    """
+    if not shutil.which(DIFFTASTIC):
+        print(
+            "seed:     difftastic (difft) is not installed; git difftool left as it was (`ixd setup` installs it)"
+        )
+        return
+    for key, value in DIFFTOOL_CONFIG.items():
+        if git(worktree, "config", "--get", key, check=False) != value:
+            git(worktree, "config", "--local", key, value)
+    print("seed:     git difftool is difftastic (`git difftool` shows structural changes only)")
 
 
 def link_profiler(worktree):
@@ -1175,12 +1219,98 @@ def commit(worktree, branch, main_branch, message):
     )
 
 
-def stage_moves(worktree, branch, main_branch):
-    """Uncommit the change and stage only its mechanical part: renames, move imports, comment-only files.
+HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+DIFF_HEADER = re.compile(r"^diff --git a/(.+?) b/(.+)$")
+
+
+def change_start(worktree, base):
+    """The commit a worktree's change starts from: its stack fork, or the merge base with its base.
+
+    :param worktree: the worktree directory
+    :param base: its base branch (the stacked-on branch, or the main branch)
+    """
+    branch = git(worktree, "symbolic-ref", "--quiet", "--short", "HEAD", check=False)
+    return (stack_fork_of(worktree, branch) if branch else None) or git(worktree, "merge-base", "HEAD", base)
+
+
+def change_diff(worktree, base):
+    """(start commit, ``-M -U0`` diff from it to the working tree, untracked files included).
+
+    The diff is built in a scratch index, so the worktree's own index is never touched.
+
+    :param worktree: the worktree directory
+    :param base: its base branch (the stacked-on branch, or the main branch)
+    """
+    start = change_start(worktree, base)
+    with tempfile.TemporaryDirectory() as scratch:
+        env = {**os.environ, "GIT_INDEX_FILE": str(Path(scratch) / "index")}
+        for step in (["read-tree", "HEAD"], ["add", "-A"]):
+            subprocess.run(["git", "-C", str(worktree), *step], env=env, capture_output=True, check=True)
+        diff = subprocess.run(
+            # Fixed prefixes: a user's diff.mnemonicPrefix would print c/ and i/ instead.
+            ["git", "-C", str(worktree), "diff", "--cached", "-M", "-U0", "--no-color"]
+            + ["--src-prefix=a/", "--dst-prefix=b/", start],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    return start, diff
+
+
+def sections_of(diff):
+    """Each file's part of a diff, as (header lines, [hunk lines, ...])."""
+    found = []
+    for section in re.split(r"(?m)^(?=diff --git )", diff):
+        if not section.startswith("diff --git "):
+            continue
+        lines = section.splitlines()
+        first_hunk = next((i for i, line in enumerate(lines) if line.startswith("@@")), len(lines))
+        hunks = []
+        for line in lines[first_hunk:]:
+            if line.startswith("@@"):
+                hunks.append([line])
+            elif hunks:
+                hunks[-1].append(line)
+        found.append((lines[:first_hunk], hunks))
+    return found
+
+
+def renumbered(patch_text):
+    """A ``-U0`` patch with each hunk's new-side start recomputed from the hunks it holds.
+
+    With no context lines ``git apply --unidiff-zero`` places a hunk at its new-side line number,
+    which the full diff computed assuming every earlier hunk of the file applies too. A patch that
+    keeps only some hunks must shift the rest by what the dropped ones would have added or removed.
+
+    :param patch_text: a patch whose hunks carry their old-side positions from the full diff
+    :return: the same patch, new-side starts consistent with exactly its own hunks
+    """
+    out, delta = [], 0
+    for line in patch_text.split("\n"):
+        if line.startswith("diff --git "):
+            delta = 0
+        match = HUNK_HEADER.match(line)
+        if match:
+            old_start = int(match.group(1))
+            old_count = 1 if match.group(2) is None else int(match.group(2))
+            new_count = 1 if match.group(4) is None else int(match.group(4))
+            new_start = old_start + delta + (old_count == 0) - (new_count == 0)
+            old_part = f"-{old_start}" + ("" if match.group(2) is None else f",{old_count}")
+            new_part = f"+{new_start}" + ("" if match.group(4) is None else f",{new_count}")
+            line = f"@@ {old_part} {new_part} @@" + line[match.end() :]
+            delta += new_count - old_count
+        out.append(line)
+    return "\n".join(out)
+
+
+def uncommit_to_start(worktree, branch, main_branch):
+    """Put a committed change back in the working tree, never below the change's own start.
 
     :param worktree: the worktree directory
     :param branch: its branch
     :param main_branch: the branch the change sits on (the base for a stacked worktree)
+    :return: the start commit, which HEAD now points at
     """
     if rebase_in_progress(worktree):
         raise SystemExit(f"{branch} has a sync in progress; run `continue` or `abort` first")
@@ -1190,32 +1320,44 @@ def stage_moves(worktree, branch, main_branch):
         raise SystemExit(f"{branch}: its start commit {start[:8]} is not below HEAD; run `sync` first")
     if git(worktree, "rev-parse", "HEAD") != start:
         git(worktree, "reset", "--quiet", "--mixed", start)
+    return start
+
+
+def stage_patch(worktree, branch, patch_text, what):
+    """Replace the worktree's index with HEAD plus one ``-U0`` patch, through ``git apply --cached``.
+
+    :param worktree: the worktree directory
+    :param branch: its branch, named in a refusal
+    :param patch_text: the patch, hunk headers numbered for exactly the hunks it holds
+    :param what: what is being staged, named in a refusal
+    """
+    git(worktree, "read-tree", "HEAD")
+    if not patch_text:
+        return
     with tempfile.TemporaryDirectory() as scratch:
-        env = {**os.environ, "GIT_INDEX_FILE": str(Path(scratch) / "index")}
-        for step in (["read-tree", "HEAD"], ["add", "-A"]):
-            subprocess.run(["git", "-C", str(worktree), *step], env=env, capture_output=True, check=True)
-        full = subprocess.run(
-            ["git", "-C", str(worktree), "diff", "--cached", "-M", "-U0", "--no-color", "HEAD"],
-            env=env,
+        patch = Path(scratch) / "stage.patch"
+        patch.write_text(renumbered(patch_text), encoding="utf-8")
+        applied = subprocess.run(
+            ["git", "-C", str(worktree), "apply", "--cached", "--unidiff-zero", str(patch)],
             capture_output=True,
             text=True,
-            check=True,
-        ).stdout
-        moves, renamed, hunks, comment_files = move_patch(full)
+        )
+    if applied.returncode != 0:
         git(worktree, "read-tree", "HEAD")
-        patch = Path(scratch) / "moves.patch"
-        patch.write_text(moves, encoding="utf-8")
-        if moves:
-            applied = subprocess.run(
-                ["git", "-C", str(worktree), "apply", "--cached", "--unidiff-zero", str(patch)],
-                capture_output=True,
-                text=True,
-            )
-            if applied.returncode != 0:
-                git(worktree, "read-tree", "HEAD")
-                raise SystemExit(
-                    f"{branch}: staging the moves failed, nothing staged:\n{applied.stderr.strip()}"
-                )
+        raise SystemExit(f"{branch}: staging {what} failed, nothing staged:\n{applied.stderr.strip()}")
+
+
+def stage_moves(worktree, branch, main_branch):
+    """Uncommit the change and stage only its mechanical part: renames, move imports, comment-only files.
+
+    :param worktree: the worktree directory
+    :param branch: its branch
+    :param main_branch: the branch the change sits on (the base for a stacked worktree)
+    """
+    uncommit_to_start(worktree, branch, main_branch)
+    _, full = change_diff(worktree, main_branch)
+    moves, renamed, hunks, comment_files = move_patch(full)
+    stage_patch(worktree, branch, moves, "the moves")
     unstaged = git(worktree, "diff", "--name-only").splitlines()
     untracked = git(worktree, "ls-files", "--others", "--exclude-standard").splitlines()
     print(

@@ -4,20 +4,20 @@ The diff is the one ``stage-moves`` reads: everything from the change's start co
 fork, or the merge base with the base branch) to the working tree, untracked files included, built
 in a scratch index so the worktree's own index is never touched. Which hunks are mechanical
 (renames, imports naming a moved class, comment-only Java files) is decided by
-:func:`ixd.worktree.move_patch`; this module only counts and labels what that leaves.
+:func:`ixd.worktree.move_patch`, and which hunks repeat one edit by :func:`ixd.clusters.cluster`;
+this module only counts and labels what those leave.
 """
 
-import os
 import re
-import subprocess
-import tempfile
 from dataclasses import dataclass, field
-from pathlib import Path
 
+from ... import clusters as hunk_clusters
 from ... import worktree as wt
 
-HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
-DIFF_HEADER = re.compile(r"^diff --git a/(.+?) b/(.+)$")
+HUNK_HEADER = wt.HUNK_HEADER
+DIFF_HEADER = wt.DIFF_HEADER
+change_diff = wt.change_diff
+sections_of = wt.sections_of
 # A public or protected method or constructor declaration line, up to its opening parenthesis.
 SIGNATURE = re.compile(
     r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(public|protected)\s+((?:[\w$<>\[\],.?& ]+?\s+)?)([\w$]+)\s*\("
@@ -39,6 +39,8 @@ class FileChange:
     kind: str  # "added", "deleted", "renamed" or "modified"
     changed_lines: int = 0
     real_lines: int = 0
+    # Real lines outside every cluster: what is left to read once the repeated edits are read once.
+    unclustered_lines: int = 0
     first_real_line: int | None = None
     binary: bool = False
     added: list = field(default_factory=list)
@@ -52,50 +54,7 @@ class Change:
     start: str
     base: str
     files: list
-
-
-def change_diff(worktree, base):
-    """(start commit, ``-M -U0`` diff from it to the working tree, untracked files included).
-
-    :param worktree: the worktree directory
-    :param base: its base branch (the stacked-on branch, or the main branch)
-    """
-    branch = wt.git(worktree, "symbolic-ref", "--quiet", "--short", "HEAD", check=False)
-    start = (wt.stack_fork_of(worktree, branch) if branch else None) or wt.git(
-        worktree, "merge-base", "HEAD", base
-    )
-    with tempfile.TemporaryDirectory() as scratch:
-        env = {**os.environ, "GIT_INDEX_FILE": str(Path(scratch) / "index")}
-        for step in (["read-tree", "HEAD"], ["add", "-A"]):
-            subprocess.run(["git", "-C", str(worktree), *step], env=env, capture_output=True, check=True)
-        diff = subprocess.run(
-            # Fixed prefixes: a user's diff.mnemonicPrefix would print c/ and i/ instead.
-            ["git", "-C", str(worktree), "diff", "--cached", "-M", "-U0", "--no-color"]
-            + ["--src-prefix=a/", "--dst-prefix=b/", start],
-            env=env,
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
-    return start, diff
-
-
-def sections_of(diff):
-    """Each file's part of a diff, as (header lines, [hunk lines, ...])."""
-    found = []
-    for section in re.split(r"(?m)^(?=diff --git )", diff):
-        if not section.startswith("diff --git "):
-            continue
-        lines = section.splitlines()
-        first_hunk = next((i for i, line in enumerate(lines) if line.startswith("@@")), len(lines))
-        hunks = []
-        for line in lines[first_hunk:]:
-            if line.startswith("@@"):
-                hunks.append([line])
-            elif hunks:
-                hunks[-1].append(line)
-        found.append((lines[:first_hunk], hunks))
-    return found
+    clustering: object = None
 
 
 def signature_of(line):
@@ -126,6 +85,8 @@ def read_change(worktree, base):
         header[0]: {hunk[0] for hunk in hunks} | ({"*"} if not hunks else set())
         for header, hunks in sections_of(mechanical_patch)
     }
+    clustering = hunk_clusters.cluster(diff, hunk_clusters.worktree_source(worktree, start), start)
+    clustered = {(hunk.header[0], hunk.lines[0]) for item in clustering.clusters for hunk in item.hunks}
     files = []
     for header, hunks in sections_of(diff):
         names = DIFF_HEADER.match(header[0])
@@ -147,15 +108,22 @@ def read_change(worktree, base):
         change = FileChange(old=old, new=new, kind=kind)
         change.binary = any(line.startswith(("Binary files", "GIT binary")) for line in header)
         skip = mechanical.get(header[0], set())
+        first_clustered = None
         for hunk in hunks:
             lines = [line for line in hunk[1:] if line[:1] in "+-"]
             change.changed_lines += len(lines)
             if hunk[0] in skip:
                 continue
             change.real_lines += len(lines)
+            if (header[0], hunk[0]) in clustered:
+                position = HUNK_HEADER.match(hunk[0])
+                first_clustered = first_clustered or (max(int(position.group(3)), 1) if position else 1)
+                continue
+            change.unclustered_lines += len(lines)
             if change.first_real_line is None:
                 position = HUNK_HEADER.match(hunk[0])
                 change.first_real_line = max(int(position.group(3)), 1) if position else 1
+        change.first_real_line = change.first_real_line or first_clustered
         if new.endswith(".java") or old.endswith(".java"):
             for hunk in hunks:
                 for line in hunk[1:]:
@@ -166,7 +134,7 @@ def read_change(worktree, base):
             change.added = sorted(added - removed)
             change.removed = sorted(removed - added)
         files.append(change)
-    return Change(start=start, base=base, files=files)
+    return Change(start=start, base=base, files=files, clustering=clustering)
 
 
 def java_type(path):
@@ -209,16 +177,22 @@ def is_supporting(path):
 
 
 def read_first(change):
-    """(files with real changes, most real lines first; files whose changes are all mechanical).
+    """(files with unclustered real lines, most first; files whose real lines are all in clusters;
+    files whose changes are all mechanical).
 
-    Source files come before tests and launch.json, which say how the change was checked rather
-    than what it is. Deleted files are left out of both lists: there is nothing to open, and the
+    A line in a cluster is read once, through the cluster, so it does not make a file worth
+    opening. Source files come before tests and launch.json, which say how the change was checked
+    rather than what it is. Deleted files are left out: there is nothing to open, and the
     boundaries list them.
     """
     live = [item for item in change.files if item.kind != "deleted"]
     real = sorted(
-        (item for item in live if item.real_lines),
-        key=lambda item: (is_supporting(item.new), -item.real_lines, item.new),
+        (item for item in live if item.unclustered_lines),
+        key=lambda item: (is_supporting(item.new), -item.unclustered_lines, item.new),
+    )
+    clustered_only = sorted(
+        (item for item in live if item.real_lines and not item.unclustered_lines),
+        key=lambda item: (-item.real_lines, item.new),
     )
     mechanical = sorted((item for item in live if not item.real_lines), key=lambda item: item.new)
-    return real, mechanical
+    return real, clustered_only, mechanical

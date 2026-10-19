@@ -5,8 +5,9 @@ inline, screenshots are ``file://`` images, and the VS Code buttons are ``vscode
 which VS Code registers as a URL scheme when it is installed.
 
 It answers, before any diff is opened, why the change exists (the ticket's ``review-summary``),
-what it changes (classes and public signatures, from the worktree diff), where to read (files
-ranked by non-mechanical changed lines), and whether anything got slower (the worktree's
+what it changes (classes and public signatures, from the worktree diff), which edits repeat (the
+hunk clusters), where to read (files ranked by changed lines that are neither mechanical nor in
+a cluster), and whether anything got slower (the worktree's
 ``tmp/<ticket>-measurements.json``). The ticket's own text follows, collapsed.
 """
 
@@ -298,21 +299,69 @@ def boundaries_section(change):
     return section("Boundaries that changed", body)
 
 
+def clusters_section(change, worktree):
+    """The repeated edits: each cluster's pattern, count, files and one representative hunk."""
+    clustering = change.clustering
+    if clustering is None or not clustering.clusters:
+        return ""
+    rows = []
+    for item in clustering.clusters:
+        removed, added = item.pattern if len(item.pattern) == 2 else ((), ())
+        pattern = "".join(
+            f'<div class="{css}">{sign} <code>{e(text)}</code></div>'
+            for css, sign, side in (("del", "&minus;", removed), ("add", "+", added))
+            for text in side
+        )
+        typical = item.representative or item.hunks[0]
+        sample = "\n".join(line for line in typical.lines[1:] if line[:1] in "+-")
+        link = e(vscode_link(Path(worktree) / typical.path, typical.line))
+        files = ", ".join(
+            f"<code>{e(Path(path).name)}</code>" + (f" ({count})" if count > 1 else "")
+            for path, count in item.files.items()
+        )
+        rows.append(
+            f'<tr><td class="num">{item.number}</td><td class="num">{len(item.hunks)}</td>'
+            f"<td>{e(hunk_clusters_level(item.level))}</td><td>{pattern}"
+            f'<details><summary>e.g. <a href="{link}"><code>{e(Path(typical.path).name)}:{typical.line}</code></a>'
+            f"</summary><pre>{e(sample)}</pre></details>"
+            f"<details><summary>{len(item.files)} file(s)</summary>{files}</details></td></tr>"
+        )
+    clustered = sum(len(item.hunks) for item in clustering.clusters)
+    lines = sum(item.lines for item in clustering.clusters)
+    body = (
+        f'<p class="muted">{clustered} of {len(clustering.hunks)} non-mechanical hunks ({lines} changed lines) '
+        f"make one of {len(clustering.clusters)} repeated edits; read each once here. "
+        f"<code>ixd wt stage-cluster &lt;name&gt; &lt;#&gt;</code> stages one, "
+        f"<code>ixd wt stage-like &lt;name&gt; &lt;file&gt;:&lt;line&gt;</code> the one under the cursor.</p>"
+        '<table><tr><th class="num">#</th><th class="num">hunks</th><th>level</th>'
+        f"<th>pattern (<code>$1</code> shared, <code>$v</code> local, <code>$k</code> constant or literal)</th></tr>"
+        f"{''.join(rows)}</table>"
+    )
+    if clustering.tree_note:
+        body += f'<p class="muted">{e(clustering.tree_note)}</p>'
+    return section(f"Repeated edits ({len(clustering.clusters)} clusters)", body)
+
+
+def hunk_clusters_level(level):
+    """The name of a cluster level."""
+    return changes.hunk_clusters.LEVEL_NAMES.get(level, str(level))
+
+
 def read_first_section(change, worktree):
-    """Files ranked by non-mechanical changed lines, linked at their first real hunk."""
-    real, mechanical = changes.read_first(change)
+    """Files ranked by unclustered non-mechanical changed lines, linked at their first such hunk."""
+    real, clustered_only, mechanical = changes.read_first(change)
     body = ""
     if real:
 
         def table(items):
             rows = "".join(
-                f'<tr><td class="num">{item.real_lines}</td><td><a href="'
+                f'<tr><td class="num">{item.unclustered_lines}</td><td><a href="'
                 f'{e(vscode_link(Path(worktree) / item.new, item.first_real_line))}"><code>{e(item.new)}</code></a>'
                 f"{READ_FIRST_BADGES.get(item.kind, '')}</td></tr>"
                 for item in items
             )
             return (
-                '<table><tr><th class="num">real lines</th><th>file (opens at its first real hunk)</th></tr>'
+                '<table><tr><th class="num">unclustered lines</th><th>file (opens at its first unclustered hunk)</th></tr>'
                 f"{rows}</table>"
             )
 
@@ -320,11 +369,22 @@ def read_first_section(change, worktree):
         rest = [item for item in real if item not in first]
         body += table(first) if first else '<p class="muted">Only tests and launch entries changed.</p>'
         if rest:
-            total = sum(item.real_lines for item in rest)
-            body += f"<details><summary>{len(rest)} more file(s), {total} real lines (tests last)</summary>{table(rest)}</details>"
+            total = sum(item.unclustered_lines for item in rest)
+            body += f"<details><summary>{len(rest)} more file(s), {total} unclustered lines (tests last)</summary>{table(rest)}</details>"
         body += (
-            '<p class="muted">Real lines: added and removed lines outside the mechanical hunks '
-            "(<code>stage-moves</code>' rules: renames, imports naming a moved class, comment-only Java files).</p>"
+            '<p class="muted">Unclustered lines: added and removed lines outside the mechanical hunks '
+            "(<code>stage-moves</code>' rules: renames, imports naming a moved class, comment-only Java files) "
+            "and outside every repeated edit above.</p>"
+        )
+    if clustered_only:
+        items = [
+            f'<a href="{e(vscode_link(Path(worktree) / item.new, item.first_real_line))}"><code>{e(item.new)}</code></a>'
+            f' <span class="muted">({item.real_lines} lines, all in clusters)</span>'
+            for item in clustered_only
+        ]
+        body += (
+            f"<details><summary>{len(clustered_only)} file(s) whose changes are all repeated edits</summary>"
+            f"{bullet_list(items, render=str)}</details>"
         )
     if mechanical:
         items = [
@@ -517,6 +577,7 @@ def diff_sections(ticket_id, worktree_path):
         return [section("Change", f'<p class="muted">reading the diff failed: {e(error)}</p>', "alert")]
     return [
         boundaries_section(change),
+        clusters_section(change, path),
         read_first_section(change, path),
         measurements_section(path, ticket_id),
         verification_section(path, branch, ticket_id),

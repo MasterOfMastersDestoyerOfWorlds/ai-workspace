@@ -17,13 +17,14 @@ positional arguments:
               models.json points at it.
     review    Open a ticket's page in the browser and its worktree in VS Code,
               or pick one in REVIEW.
-    setup     Clone the repositories, install the commands, record REPO_HOME,
-              install the autofix artifact.
+    setup     Clone the repositories, install the commands and difftastic,
+              record REPO_HOME, install autofix.
     ssh       setup
     stats     Print wall time by activity, thinking pauses, slow calls, errors
               and repeated command shapes.
-    wt        abort, archive, commit, continue, done, launch-add, launch-list,
-              new, stage-moves, status, sync
+    wt        abort, archive, clusters, commit, continue, done, launch-add,
+              launch-list, new, stage-cluster, stage-like, stage-moves,
+              status, sync
 
 options:
   -h, --help  show this help message and exit
@@ -145,9 +146,13 @@ The page answers why, what, where and how fast before any diff is opened, in thi
   public/protected declarations the diff adds or removes. The diff runs from the change's
   start (the stack fork, or the merge base with its base branch) to the working tree,
   untracked files included, as ``stage-moves`` reads it.
-- Files to read first: ranked by changed lines that are not mechanical (``stage-moves``'
-  rules: renames, imports naming a moved class, comment-only Java files), each a VS Code link
-  opening the file at its first real hunk; mechanical-only and deleted files listed apart.
+- Repeated edits: the clusters ``ixd wt clusters`` lists (hunks making the same edit, matched
+  as identical lines, the same token rewrite, or the same syntax-tree edit), each with its
+  pattern, hunk count, files and a representative hunk linked into VS Code.
+- Files to read first: ranked by changed lines that are neither mechanical (``stage-moves``'
+  rules: renames, imports naming a moved class, comment-only Java files) nor in a cluster,
+  each a VS Code link opening the file at its first such hunk; files whose changes are all
+  repeated edits, mechanical-only and deleted files are listed apart.
 - Measurements: ``tmp/<ticket-lowercase>-measurements.json`` in the worktree, as a
   before/after table with percent change, regressions highlighted. The schema::
 
@@ -195,7 +200,7 @@ options:
 usage: ixd setup [-h] [--repo-home REPO_HOME] [--dry-run] [--no-shell]
                  [--no-tools] [--no-maven]
 
-Clone the repositories, install the commands, record REPO_HOME, install the autofix artifact.
+Clone the repositories, install the commands and difftastic, record REPO_HOME, install autofix.
 
 Every step is idempotent, so rerunning after a partial failure is safe. REPO_HOME defaults to the
 directory holding this checkout, because the other repositories are its siblings. It is written to
@@ -208,8 +213,8 @@ options:
                         of this checkout
   --dry-run             print every step without running it
   --no-shell            do not touch the shell profile or the user environment
-  --no-tools            skip installing the commands and syncing the
-                        environment
+  --no-tools            skip installing the commands and difftastic, and
+                        syncing the environment
   --no-maven            skip installing the autofix artifact into ~/.m2
 ```
 ## ixd ssh
@@ -281,39 +286,43 @@ options:
 ```
 usage: ixd wt [-h] subcommand ...
 
-wt: abort, archive, commit, continue, done, launch-add, launch-list, new,
-stage-moves, status, sync
+wt: abort, archive, clusters, commit, continue, done, launch-add, launch-list,
+new, stage-cluster, stage-like, stage-moves, status, sync
 
 positional arguments:
   subcommand
-    abort      Abandon an interrupted sync and restore the state the worktree
-               was in before it.
-    archive    Commit a worktree's change, tag it archive/<name>, remove the
-               worktree, mark the ticket ARCHIVED.
-    commit     Make one squashed commit of the whole diff on top of the main
-               branch.
-    continue   After the conflict markers are gone, finish the interrupted
-               sync.
-    done       Sync, refuse leftover diagnostics, build, run the launch entry,
-               check tmp/, mark REVIEW.
-    launch-add
-               Add one entry to the worktree's .vscode/launch.json, keeping
-               the file's comments.
-    launch-list
-               Print the launch entry names this worktree offers, with their
-               scene arguments.
-    new        Create the worktree and branch off the main branch, seed it,
-               and print the agent brief.
-    stage-moves
-               Uncommit the change, stage its move hunks, and leave every code
-               hunk unstaged for review.
-    status     Show the branch, its refs, the changed files, added
-               diagnostics, and the last agent note.
-    sync       Rebase the uncommitted change onto the main branch and leave it
-               uncommitted again.
+    abort        Abandon an interrupted sync and restore the state the
+                 worktree was in before it.
+    archive      Commit a worktree's change, tag it archive/<name>, remove the
+                 worktree, mark the ticket ARCHIVED.
+    clusters     List the change's hunks grouped by the edit they make, with
+                 the rest as unclustered.
+    commit       Make one squashed commit of the whole diff on top of the main
+                 branch.
+    continue     After the conflict markers are gone, finish the interrupted
+                 sync.
+    done         Sync, refuse leftover diagnostics, build, run the launch
+                 entry, check tmp/, mark REVIEW.
+    launch-add   Add one entry to the worktree's .vscode/launch.json, keeping
+                 the file's comments.
+    launch-list  Print the launch entry names this worktree offers, with their
+                 scene arguments.
+    new          Create the worktree and branch off the main branch, seed it,
+                 and print the agent brief.
+    stage-cluster
+                 Stage exactly one cluster's hunks, numbered as ``ixd wt
+                 clusters`` lists them.
+    stage-like   Stage every hunk in the cluster of the hunk at
+                 ``<file>:<line>``, the line the cursor is on.
+    stage-moves  Uncommit the change, stage its move hunks, and leave every
+                 code hunk unstaged for review.
+    status       Show the branch, its refs, the changed files, added
+                 diagnostics, and the last agent note.
+    sync         Rebase the uncommitted change onto the main branch and leave
+                 it uncommitted again.
 
 options:
-  -h, --help   show this help message and exit
+  -h, --help     show this help message and exit
 ```
 ### ixd wt abort
 ```
@@ -362,6 +371,45 @@ options:
                         place
   --no-mark             leave the ticket's status alone instead of marking it
                         ARCHIVED
+```
+### ixd wt clusters
+```
+usage: ixd wt clusters [-h] [--every-hunk] [--commit COMMIT]
+                       [--repo {Ixdar,ixdar-tickets,ai-workspace}]
+                       [worktree_name]
+
+List the change's hunks grouped by the edit they make, with the rest as unclustered.
+
+The diff is the one ``stage-moves`` and ``ixd review`` read: from the change's start (the stack
+fork, or the merge base with its base) to the working tree, untracked files included, without
+the mechanical hunks ``stage-moves`` stages. Each hunk joins the hunks that make the same edit,
+at the first level that joins them:
+
+- identical: the same removed and added lines, whitespace collapsed, blank lines dropped.
+- token rewrite: the same rewrite once differing tokens are abstracted. A token run both sides
+  share becomes ``$1``, a local name ``$v1``, a constant or literal ``$k1``; a removed
+  declaration of a local the added side never names, and a repeat of the same statement, do
+  not count.
+- syntax tree: the same edit on the syntax tree (tree-sitter through ast-grep, for Java,
+  Python, JavaScript and TypeScript): each hunk widened to the whole statements it touches, so
+  rewrapping and comments do not matter, plus hunks that do part of an established pattern's
+  edit because the diff cut it into two hunks.
+
+Each cluster prints its number (what ``stage-cluster`` takes), level, hunk and file counts,
+pattern, files and one representative hunk; the unclustered hunks, the ones to read, follow
+as ``path:line``. Nothing is staged or changed.
+
+positional arguments:
+  worktree_name         worktree path or bare name, defaulting to the one
+                        holding the current directory
+
+options:
+  -h, --help            show this help message and exit
+  --every-hunk          print every hunk of each cluster, not just one
+  --commit COMMIT       cluster this commit's diff against its parent instead
+                        of a worktree (read only)
+  --repo {Ixdar,ixdar-tickets,ai-workspace}
+                        repository under REPO_HOME holding ``--commit``
 ```
 ### ixd wt commit
 ```
@@ -466,7 +514,9 @@ usage: ixd wt new [-h] [--repo {Ixdar,ixdar-tickets,ai-workspace}]
 Create the worktree and branch off the main branch, seed it, and print the agent brief.
 
 The branch takes the ticket's name, which is how `ixd wt done` and `ixd land` find the ticket to
-mark. The virtualenv is created up front so an agent's first command is not a cold install. The
+mark. The virtualenv is created up front so an agent's first command is not a cold install, and
+when difftastic is installed it becomes the repository's ``git difftool``, so a reformatted or
+rewrapped line reads as unchanged there. The
 brief that is printed is everything an agent needs to start: the paths, the ticket file, the
 verbs, and what is denied.
 
@@ -486,6 +536,45 @@ options:
                         repository under REPO_HOME that gets the worktree
   --base BASE           stack on this worktree branch instead of the main
                         branch
+```
+### ixd wt stage-cluster
+```
+usage: ixd wt stage-cluster [-h] worktree_name number
+
+Stage exactly one cluster's hunks, numbered as ``ixd wt clusters`` lists them.
+
+Like ``stage-moves`` it first puts a committed change back in the working tree (never below
+the worktree's own start), then replaces the index with the start commit plus that cluster's
+hunks through ``git apply --cached``, so ``git diff --cached`` shows only the cluster and
+``git diff`` the rest. Whatever was staged before, the moves included, is unstaged;
+``stage-moves`` puts that layout back. A hunk in a renamed file stages the rename with it.
+Nothing is committed.
+
+positional arguments:
+  worktree_name  worktree path or bare name
+  number         the cluster's number in ``ixd wt clusters``
+
+options:
+  -h, --help     show this help message and exit
+```
+### ixd wt stage-like
+```
+usage: ixd wt stage-like [-h] worktree_name location
+
+Stage every hunk in the cluster of the hunk at ``<file>:<line>``, the line the cursor is on.
+
+The file is relative to the worktree (an absolute path inside it works too) and the line is
+the working-tree line, as the editor shows it; a pure deletion is found from the line on
+either side of the gap. A hunk in no cluster is staged alone. Staging works as in
+``stage-cluster``: the index becomes the start commit plus those hunks, ``git diff --cached``
+shows only them, and ``stage-moves`` puts the review layout back. Nothing is committed.
+
+positional arguments:
+  worktree_name  worktree path or bare name
+  location       ``path/to/File.java:123``
+
+options:
+  -h, --help     show this help message and exit
 ```
 ### ixd wt stage-moves
 ```
@@ -544,7 +633,8 @@ conflict leaves the rebase in progress with the files listed, for `continue` or 
 
 A worktree stacked with ``wt new --base`` replays onto its base branch instead. ``--base``
 stacks an existing worktree the same way: only its own change moves onto the base's tip, and
-later syncs keep it there until the base lands.
+later syncs keep it there until the base lands. ``--base`` naming the main branch takes the
+worktree off its stack: only its own change moves onto the main branch, and it can land at once.
 
 Afterwards the tree is compiled and Maven's classes are copied over the IDE's ``target-ide/``,
 also when it was already on top of the main branch: VS Code compiles the annotation registries
@@ -558,5 +648,6 @@ positional arguments:
 
 options:
   -h, --help     show this help message and exit
-  --base BASE    stack this worktree on that worktree branch from now on
+  --base BASE    stack this worktree on that worktree branch from now on, or
+                 the main branch to unstack it
 ```

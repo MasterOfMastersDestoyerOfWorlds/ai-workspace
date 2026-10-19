@@ -3,7 +3,9 @@ name = "ai-workspace-tools"
 version = "0.1.0"
 description = "Worktree helpers: wt (agents, safe) and land (user only, merges to master)."
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "ast-grep-py>=0.51.0",
+]
 
 [project.scripts]
 ixd = "ixd.cli:cli"

@@ -12,7 +12,7 @@ def setup(
     no_tools: bool = False,
     no_maven: bool = False,
 ) -> int:
-    """Clone the repositories, install the commands, record REPO_HOME, install the autofix artifact.
+    """Clone the repositories, install the commands and difftastic, record REPO_HOME, install autofix.
 
     Every step is idempotent, so rerunning after a partial failure is safe. REPO_HOME defaults to the
     directory holding this checkout, because the other repositories are its siblings. It is written to
@@ -21,7 +21,7 @@ def setup(
     :param repo_home: where the repositories live, defaulting to the parent of this checkout
     :param dry_run: print every step without running it
     :param no_shell: do not touch the shell profile or the user environment
-    :param no_tools: skip installing the commands and syncing the environment
+    :param no_tools: skip installing the commands and difftastic, and syncing the environment
     :param no_maven: skip installing the autofix artifact into ~/.m2
     """
     return machine.prepare(

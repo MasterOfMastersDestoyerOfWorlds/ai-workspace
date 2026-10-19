@@ -182,9 +182,13 @@ def review(
       public/protected declarations the diff adds or removes. The diff runs from the change's
       start (the stack fork, or the merge base with its base branch) to the working tree,
       untracked files included, as ``stage-moves`` reads it.
-    - Files to read first: ranked by changed lines that are not mechanical (``stage-moves``'
-      rules: renames, imports naming a moved class, comment-only Java files), each a VS Code link
-      opening the file at its first real hunk; mechanical-only and deleted files listed apart.
+    - Repeated edits: the clusters ``ixd wt clusters`` lists (hunks making the same edit, matched
+      as identical lines, the same token rewrite, or the same syntax-tree edit), each with its
+      pattern, hunk count, files and a representative hunk linked into VS Code.
+    - Files to read first: ranked by changed lines that are neither mechanical (``stage-moves``'
+      rules: renames, imports naming a moved class, comment-only Java files) nor in a cluster,
+      each a VS Code link opening the file at its first such hunk; files whose changes are all
+      repeated edits, mechanical-only and deleted files are listed apart.
     - Measurements: ``tmp/<ticket-lowercase>-measurements.json`` in the worktree, as a
       before/after table with percent change, regressions highlighted. The schema::
 

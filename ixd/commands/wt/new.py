@@ -15,7 +15,9 @@ def new(
     """Create the worktree and branch off the main branch, seed it, and print the agent brief.
 
     The branch takes the ticket's name, which is how `ixd wt done` and `ixd land` find the ticket to
-    mark. The virtualenv is created up front so an agent's first command is not a cold install. The
+    mark. The virtualenv is created up front so an agent's first command is not a cold install, and
+    when difftastic is installed it becomes the repository's ``git difftool``, so a reformatted or
+    rewrapped line reads as unchanged there. The
     brief that is printed is everything an agent needs to start: the paths, the ticket file, the
     verbs, and what is denied.
 
