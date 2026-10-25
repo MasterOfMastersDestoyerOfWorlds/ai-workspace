@@ -71,8 +71,9 @@ messages, PR descriptions, or commit commands given to the user. Plain message o
 
 ## Subagents
 
-Spawn Agent-tool subagents with `model: "opus"`. Parallel Fable subagents hit the Fable session
-rate limit and were killed mid-work. When relaunching an interrupted agent, tell it to inspect
+Agent-tool subagents default to sonnet (`CLAUDE_CODE_SUBAGENT_MODEL` in `.claude/settings.json`);
+pass no `model` unless the user asks for a different one. Never use Fable: parallel Fable
+subagents hit the Fable session rate limit and were killed mid-work. When relaunching an interrupted agent, tell it to inspect
 `git status` and `git diff` in its worktree first and continue from the partial state.
 
 For Ixdar tickets, agents work in `$REPO_HOME/Ixdar/.claude/worktrees/<ticket>` on a branch
@@ -90,8 +91,11 @@ brief), `wt sync <ticket>` (rebase that diff onto the current master and leave i
 again), `wt launch-add <ticket> --scene <id>` (write the launch.json entry as JSONC, comments
 intact) and `wt done <ticket>` (sync, refuse debugging scaffolding the ticket's definition of done
 does not name — log lines, public counters, describe/dump helpers, sample limits, `*Probe.java`
-files, found by `ixd/diagnostics.py` — build, run the entry, check `tmp/` holds a screenshot, mark
-the ticket REVIEW, refusing with a reason on any failed step); `commit -m` makes one squashed commit on top of master (only after a sync). Agents
+files, found by `ixd/diagnostics.py` — build, run the ticket's `verify-tests` when it names any
+(Maven `-Dtest` selectors set with `generate_board.py update ID --add-verify-test`; a selector
+matching no test refuses), run the entry, check `tmp/` holds a screenshot, mark the ticket REVIEW,
+refusing with a reason on any failed step; a ticket with `verify-tests` needs no screenshot and
+runs its entry only when it has one); `commit -m` makes one squashed commit on top of master (only after a sync). Agents
 leave their work uncommitted; they run `sync` when they need newer master. The
 user alone merges to master, with `ixd land <name>` (sync, remove the launch.json entries named after a ticket while
 other launch.json changes land, squash-commit with the ticket title as message, fast-forward

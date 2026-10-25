@@ -37,7 +37,9 @@ def launch_add(
     for entry in worktree.launch_entries(path):
         if str(entry.get("name")) == entry_name:
             raise SystemExit(f"{launch_file} already has an entry named {entry_name!r}; nothing written")
-    updated = worktree.insert_launch_entry(text, worktree.launch_entry(entry_name, scene, list(property)))
+    updated = worktree.insert_launch_entry(
+        text, worktree.launch_entry(path, entry_name, scene, list(property))
+    )
     try:
         worktree.parse_jsonc(updated)
     except ValueError as error:

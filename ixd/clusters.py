@@ -29,6 +29,7 @@ dependency of this project rather than a system tool; without it level 3 is skip
 import difflib
 import re
 import subprocess
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -337,12 +338,16 @@ def edit_key(minus, plus):
         return None
     minus, plus = shared_runs(minus, plus)
     names = {}
+    per_role = Counter()
 
     def name(token):
         text, role = token
         if role == KEEP:
             return text
-        return names.setdefault((role, text), f"${role}{sum(r == role for r, _ in names) + 1}")
+        if (role, text) not in names:
+            per_role[role] += 1
+            names[(role, text)] = f"${role}{per_role[role]}"
+        return names[(role, text)]
 
     minus_text = [[name(token) for token in statement] for statement in statements(minus)]
     plus_text = [[name(token) for token in statement] for statement in statements(plus)]

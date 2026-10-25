@@ -45,6 +45,10 @@ LAUNCH_VM_ARGS = (
     "-Dsun.awt.noerasebackground=true -Dorg.lwjgl.util.DebugLoader=true"
 )
 LAUNCH_MAIN_CLASS = "ixdar.canvas.IxdarWindow"
+# What marks the module a scene launches from and the one it runs in, for either Ixdar layout.
+LAUNCH_MAIN_SOURCE = "src/main/java/ixdar/canvas/IxdarWindow.java"
+SCENE_RESOURCES = "src/main/resources/glsl"
+LEGACY_APP_MODULE = "ixdar-app"
 # Ixdar's own script that points .profiler/libasyncProfiler at the installed async-profiler.
 PROFILER_LINK_SCRIPT = "tools/link-profiler.sh"
 SCREENSHOT_SUFFIXES = (".png", ".jpg", ".jpeg")
@@ -60,7 +64,9 @@ HANDBACK_TOOL = "SubagentHandback"
 WRITING_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
 NOTE_LINES = 8
 NOTE_WIDTH = 160
-BUILD_COMMAND = ["mvn", "-q", "compile", "-pl", "annotations,ixdar-app"]
+# The whole reactor, never `-pl`: a module left out is resolved from ~/.m2, which every worktree
+# shares at one version, so it would be whichever branch last installed it.
+BUILD_COMMAND = ["mvn", "-q", "compile"]
 
 
 def git(cwd, *args, check=True):
@@ -757,21 +763,45 @@ def strip_ticket_launch_entries(worktree):
     return removed
 
 
-def launch_entry(name, scene, properties):
-    """A java launch configuration running one scene id, with each ``k=v`` property as ``-Dk=v``."""
+def module_holding(worktree, relative):
+    """The name of the worktree's Maven module directory that holds ``relative``, or None.
+
+    Ixdar's layout changed under ENG-30 from one ``ixdar-app`` module to several, and every worktree
+    and the main checkout run this same code, so launch entries find their modules by content.
+
+    :param worktree: the worktree directory
+    :param relative: a path inside a module, such as ``src/main/java/ixdar/canvas/IxdarWindow.java``
+    :return: the module directory's name, or None when no module holds it
+    """
+    for pom in sorted(worktree.glob("*/pom.xml")):
+        if (pom.parent / relative).exists():
+            return pom.parent.name
+    return None
+
+
+def launch_entry(worktree, name, scene, properties):
+    """A java launch configuration running one scene id, with each ``k=v`` property as ``-Dk=v``.
+
+    The project is the module holding IxdarWindow (``ixdar-desktop``, formerly ``ixdar-app``) and
+    the working directory the module holding the shaders the scenes hot-reload by relative path
+    (``ixdar-engine``, formerly ``ixdar-app``).
+    """
     vm_args = LAUNCH_VM_ARGS
     for prop in properties:
         if "=" not in prop:
             raise SystemExit(f"--property {prop!r} is not key=value")
         vm_args += f" -D{prop}"
+    project = module_holding(worktree, LAUNCH_MAIN_SOURCE) or LEGACY_APP_MODULE
+    working = module_holding(worktree, SCENE_RESOURCES) or LEGACY_APP_MODULE
     return {
         "type": "java",
         "name": name,
         "request": "launch",
         "mainClass": LAUNCH_MAIN_CLASS,
+        "projectName": project,
         "args": scene,
         "vmArgs": vm_args,
-        "cwd": "${workspaceFolder}/ixdar-app",
+        "cwd": "${workspaceFolder}/" + working,
     }
 
 
@@ -915,7 +945,7 @@ def brief_text(worktree, branch, main_branch):
     ]
     if (worktree / "pom.xml").exists():
         lines += [
-            f"build:    cd {worktree} && mvn -q compile -pl annotations,ixdar-app",
+            f"build:    cd {worktree} && mvn -q compile   (tests: mvn test; never -pl, it resolves modules from ~/.m2)",
             f"scene:    cd {worktree} && uv run ixdar-cli run-scene --scene <id> --screenshot tmp/{branch}.png",
         ]
     lines += [

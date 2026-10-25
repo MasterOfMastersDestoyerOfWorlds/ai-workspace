@@ -101,6 +101,7 @@ uv run black ixd hooks
 
 | command | what it does |
 | --- | --- |
+| [`ixd board`](#ixd-board) | Regenerate BOARD.md from the ticket store and open it in the browser as a page. |
 | [`ixd docs`](#ixd-docs) | Write the command reference into README.md and HELP.md from the docstrings. |
 | [`ixd land`](#ixd-land) | Merge a worktree's change into the main branch and clean up after it. |
 | [`ixd ninfer`](#ixd-ninfer) | Start ninfer in the Windows box's WSL distro and make sure pi's models.json points at it. |
@@ -113,15 +114,36 @@ uv run black ixd hooks
 | [`ixd wt clusters`](#ixd-wt-clusters) | List the change's hunks grouped by the edit they make, with the rest as unclustered. |
 | [`ixd wt commit`](#ixd-wt-commit) | Make one squashed commit of the whole diff on top of the main branch. |
 | [`ixd wt continue`](#ixd-wt-continue) | After the conflict markers are gone, finish the interrupted sync. |
-| [`ixd wt done`](#ixd-wt-done) | Sync, refuse leftover diagnostics, build, run the launch entry, check tmp/, mark REVIEW. |
+| [`ixd wt done`](#ixd-wt-done) | Sync, refuse leftover diagnostics, build, run the named tests and the launch entry, check tmp/, mark REVIEW. |
 | [`ixd wt launch-add`](#ixd-wt-launch-add) | Add one entry to the worktree's .vscode/launch.json, keeping the file's comments. |
 | [`ixd wt launch-list`](#ixd-wt-launch-list) | Print the launch entry names this worktree offers, with their scene arguments. |
 | [`ixd wt new`](#ixd-wt-new) | Create the worktree and branch off the main branch, seed it, and print the agent brief. |
+| [`ixd wt stage-checkpoint`](#ixd-wt-stage-checkpoint) | Stage the change as it stood at ``<checkpoint>``, leaving everything since unstaged. |
 | [`ixd wt stage-cluster`](#ixd-wt-stage-cluster) | Stage exactly one cluster's hunks, numbered as ``ixd wt clusters`` lists them. |
 | [`ixd wt stage-like`](#ixd-wt-stage-like) | Stage every hunk in the cluster of the hunk at ``<file>:<line>``, the line the cursor is on. |
 | [`ixd wt stage-moves`](#ixd-wt-stage-moves) | Uncommit the change, stage its move hunks, and leave every code hunk unstaged for review. |
 | [`ixd wt status`](#ixd-wt-status) | Show the branch, its refs, the changed files, added diagnostics, and the last agent note. |
 | [`ixd wt sync`](#ixd-wt-sync) | Rebase the uncommitted change onto the main branch and leave it uncommitted again. |
+
+## board
+
+### ixd board
+
+Regenerate BOARD.md from the ticket store and open it in the browser as a page.
+
+```
+ixd board [--page-only]
+```
+
+The page is ``~/.cache/ixd/board.html``, rendered from the BOARD.md that
+``generate_board.py board`` has just written, so it shows the live ticket store, unpushed
+changes included. Each ticket id opens the ticket's JSON in VS Code. Under Hyprland the page
+opens in a browser window of its own on the first empty workspace right of every workspace in
+use, and the view switches to it.
+
+| argument | default | meaning |
+| --- | --- | --- |
+| `--page-only` | off | write the page and print its path; open no browser |
 
 ## docs
 
@@ -150,6 +172,9 @@ Merge a worktree's change into the main branch and clean up after it.
 ```
 ixd land [WORKTREE_NAME] [--message MESSAGE] [--body BODY] [--keep-launch] [--keep-worktree] [--no-build] [--no-mark]
 ```
+
+Once landed, a ``landed`` line goes to the workspace event log (``ixd/events.py``), which the
+``land_events`` hook shows every Claude session on its next prompt.
 
 Six steps, each refusing to continue on failure. Replay the change onto the current main branch.
 Remove every .vscode/launch.json entry named after a ticket (``PATCH-117: quad-layout``), the
@@ -383,6 +408,9 @@ last synced to; there is no rebase, because replaying dead work onto today's mai
 conflict resolution for nothing. The launch.json entries stay in the commit as part of the
 record.
 
+An ``archived`` line goes to the workspace event log (``ixd/events.py``), which every Claude
+session sees on its next prompt.
+
 Refuses when the branch has nothing to archive (no diff and no commits of its own) or when the
 tag already exists. Recover the work later with ``git worktree add <path> archive/<name>``.
 
@@ -462,7 +490,7 @@ refreshes the IDE's ``target-ide/``, exiting 1 when that build fails.
 
 ### ixd wt done
 
-Sync, refuse leftover diagnostics, build, run the launch entry, check tmp/, mark REVIEW.
+Sync, refuse leftover diagnostics, build, run the named tests and the launch entry, check tmp/, mark REVIEW.
 
 ```
 ixd wt done [WORKTREE_NAME]
@@ -471,9 +499,14 @@ ixd wt done [WORKTREE_NAME]
 Log lines, public counters, describe/dump helpers, sample limits and ``*Probe.java`` files
 the diff adds are refused unless the ticket's definition of done names them: strip them, or
 name them there when they are meant to land. Every step must pass. A failure stops with the reason and nothing is marked, because a ticket in
-REVIEW is a claim that the user can verify the work with F5. The launch entry is run exactly as
-F5 runs it, only headless, so a crash on that path is caught here and never at the user's
-keyboard; there is no way to skip it.
+REVIEW is a claim that the user can verify the work.
+
+A ticket's ``verify-tests`` (Maven ``-Dtest`` selectors, set with ``generate_board.py update ID
+--add-verify-test GoldenFingerprintTest``) are run after the build and must pass with at least
+one test run, so a misspelt selector refuses instead of passing with "Tests run: 0". Such a
+ticket needs no screenshot, and its launch entry is run only when it has one. Every other
+ticket's launch entry is run exactly as F5 runs it, only headless, so a crash on that path is
+caught here and never at the user's keyboard, and tmp/ must hold a screenshot.
 
 After the build, each module's Maven classes are copied over the IDE's ``target-ide/``
 output, which is what F5 actually runs: VS Code's Java extension may not have rebuilt after
@@ -540,6 +573,26 @@ replays onto the main branch again; `ixd land` refuses it while the base is stil
 | TICKET | required | worktree and branch name, usually the ticket id such as craw-27 |
 | `--repo` `Ixdar` \| `ixdar-tickets` \| `ai-workspace` | `Ixdar` | repository under REPO_HOME that gets the worktree |
 | `--base` | — | stack on this worktree branch instead of the main branch |
+
+### ixd wt stage-checkpoint
+
+Stage the change as it stood at ``<checkpoint>``, leaving everything since unstaged.
+
+```
+ixd wt stage-checkpoint WORKTREE_NAME CHECKPOINT
+```
+
+The checkpoint is a commit ``wt commit`` made earlier, which a later ``sync`` folded back into
+the uncommitted change. Its own diff (checkpoint parent to checkpoint) is staged onto the
+change's start commit, so ``git diff --cached`` shows the checkpoint and ``git diff`` shows
+only the work done after it. When master moved since the checkpoint, the patch applies only
+if master did not touch the same lines; otherwise nothing is staged and the conflict is named.
+``stage-moves`` puts the review layout back. Nothing is committed.
+
+| argument | default | meaning |
+| --- | --- | --- |
+| WORKTREE_NAME | required | worktree path or bare name |
+| CHECKPOINT | required | the checkpoint commit, e.g. ``606ba97d`` |
 
 ### ixd wt stage-cluster
 

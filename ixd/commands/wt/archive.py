@@ -7,7 +7,7 @@ call. Every spelling is on the Claude permission deny list.
 import datetime
 from typing import Annotated
 
-from ... import worktree
+from ... import events, worktree
 from ...registry import CliOption, cli_command
 
 TAG_PREFIX = "archive/"
@@ -29,6 +29,9 @@ def archive(
     last synced to; there is no rebase, because replaying dead work onto today's main branch is
     conflict resolution for nothing. The launch.json entries stay in the commit as part of the
     record.
+
+    An ``archived`` line goes to the workspace event log (``ixd/events.py``), which every Claude
+    session sees on its next prompt.
 
     Refuses when the branch has nothing to archive (no diff and no commits of its own) or when the
     tag already exists. Recover the work later with ``git worktree add <path> archive/<name>``.
@@ -73,6 +76,7 @@ def archive(
 
     if not no_mark:
         mark_ticket_archived(branch, ticket, tag, archived, reason.strip())
+    events.record("archived", (ticket or {}).get("id", branch), tag=tag, reason=reason.strip())
     print(f"archived; restore with: git worktree add {path} {tag}")
     return 0
 

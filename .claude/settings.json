@@ -2,7 +2,8 @@
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "autoMemoryEnabled": false,
   "env": {
-    "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD": "1"
+    "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD": "1",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "sonnet"
   },
   "hooks": {
     "PreToolUse": [
@@ -17,6 +18,17 @@
           {
             "type": "command",
             "command": "uv run --project \"${CLAUDE_PROJECT_DIR}\" python \"${CLAUDE_PROJECT_DIR}/hooks/sleep_poll_guard.py\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --project \"${CLAUDE_PROJECT_DIR}\" python \"${CLAUDE_PROJECT_DIR}/hooks/land_events.py\"",
             "timeout": 15
           }
         ]
@@ -37,6 +49,9 @@
   },
   "permissions": {
     "deny": [
+      "Bash(*mvn* -pl *)",
+      "Bash(*mvn* -pl=*)",
+      "Bash(*mvn* --projects*)",
       "Bash(*worktree_land.py*)",
       "Bash(land)",
       "Bash(land *)",

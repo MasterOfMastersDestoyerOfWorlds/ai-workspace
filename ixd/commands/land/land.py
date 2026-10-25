@@ -7,12 +7,10 @@ FOR THE USER ONLY. Every spelling of this command is on the Claude permission de
 import subprocess
 from typing import Annotated, Literal
 
-from ... import editor, worktree
+from ... import editor, events, worktree
 from ...registry import CliOption, cli_command
 
 TICKET_REPO = worktree.TICKET_REPO
-
-IXDAR_MODULES = "annotations,ixdar-app"
 
 
 @cli_command
@@ -26,6 +24,9 @@ def land(
     no_mark: bool = False,
 ) -> int:
     """Merge a worktree's change into the main branch and clean up after it.
+
+    Once landed, a ``landed`` line goes to the workspace event log (``ixd/events.py``), which the
+    ``land_events`` hook shows every Claude session on its next prompt.
 
     Six steps, each refusing to continue on failure. Replay the change onto the current main branch.
     Remove every .vscode/launch.json entry named after a ticket (``PATCH-117: quad-layout``), the
@@ -119,6 +120,13 @@ def land(
 
     if not no_mark:
         mark_ticket_done(branch)
+    ticket = worktree.ticket_for(branch) or {}
+    events.record(
+        "landed",
+        ticket.get("id", branch),
+        commit=worktree.git(main_checkout, "rev-parse", "--short", "HEAD"),
+        branch=main_branch,
+    )
     try:
         if not no_build:
             rebuild_main_checkout(main_checkout)
@@ -274,8 +282,9 @@ def rebuild_main_checkout(main_checkout):
     """
     if not (main_checkout / "pom.xml").exists():
         return
-    modules = IXDAR_MODULES if (main_checkout / "ixdar-app").is_dir() else None
-    command = ["mvn", "-q", "compile"] + (["-pl", modules] if modules else [])
+    # The whole reactor: `-pl` would resolve the skipped modules from ~/.m2, which every
+    # worktree shares at one version.
+    command = ["mvn", "-q", "compile"]
     print(f"== rebuild {main_checkout} ({' '.join(command)})")
     result = subprocess.run(command, cwd=str(main_checkout), capture_output=True, text=True)
     if result.returncode != 0:

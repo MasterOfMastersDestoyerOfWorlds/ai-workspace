@@ -125,8 +125,8 @@ GENERATED_POM_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
 
 UNAVAILABLE_ADVICE = (
     "The ai-workspace checkstyle hook could not assemble a checkstyle classpath, so Java edits "
-    "are not being checked at edit time. Build Ixdar once (mvn -q compile -pl "
-    "annotations,ixdar-app) to populate ~/.m2, then edits will be checked again. Until then the "
+    "are not being checked at edit time. Build Ixdar once (mvn -q compile from its root) to "
+    "populate ~/.m2, then edits will be checked again. Until then the "
     "first compile is still the only place violations show up."
 )
 

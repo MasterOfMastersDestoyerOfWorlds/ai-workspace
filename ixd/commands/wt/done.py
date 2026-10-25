@@ -1,23 +1,33 @@
 """Verify a worktree's work and hand it to the user."""
 
+import fnmatch
+import time
+import xml.etree.ElementTree as ElementTree
 from typing import Annotated
 
 from ... import diagnostics, worktree
 from ...registry import CliOption, cli_command
+
+VERIFY_TESTS = "verify-tests"
 
 
 @cli_command
 def done(
     worktree_name: Annotated[str, CliOption(positional=True)] = "",
 ) -> int:
-    """Sync, refuse leftover diagnostics, build, run the launch entry, check tmp/, mark REVIEW.
+    """Sync, refuse leftover diagnostics, build, run the named tests and the launch entry, check tmp/, mark REVIEW.
 
     Log lines, public counters, describe/dump helpers, sample limits and ``*Probe.java`` files
     the diff adds are refused unless the ticket's definition of done names them: strip them, or
     name them there when they are meant to land. Every step must pass. A failure stops with the reason and nothing is marked, because a ticket in
-    REVIEW is a claim that the user can verify the work with F5. The launch entry is run exactly as
-    F5 runs it, only headless, so a crash on that path is caught here and never at the user's
-    keyboard; there is no way to skip it.
+    REVIEW is a claim that the user can verify the work.
+
+    A ticket's ``verify-tests`` (Maven ``-Dtest`` selectors, set with ``generate_board.py update ID
+    --add-verify-test GoldenFingerprintTest``) are run after the build and must pass with at least
+    one test run, so a misspelt selector refuses instead of passing with "Tests run: 0". Such a
+    ticket needs no screenshot, and its launch entry is run only when it has one. Every other
+    ticket's launch entry is run exactly as F5 runs it, only headless, so a crash on that path is
+    caught here and never at the user's keyboard, and tmp/ must hold a screenshot.
 
     After the build, each module's Maven classes are copied over the IDE's ``target-ide/``
     output, which is what F5 actually runs: VS Code's Java extension may not have rebuilt after
@@ -26,7 +36,8 @@ def done(
     :param worktree_name: worktree path or bare name, defaulting to the one holding the current directory
     """
     path, branch, main_branch = worktree.resolve_worktree(worktree_name)
-    print(f"== done {branch}: sync, build, run the launch entry, check screenshots, mark REVIEW")
+    tests = (worktree.ticket_for(branch) or {}).get(VERIFY_TESTS) or []
+    print(f"== done {branch}: sync, build, run the named tests and the launch entry, check tmp/, mark REVIEW")
     worktree.sync(path, branch, main_branch)
     require_no_leftover_diagnostics(path, branch)
     build(path)
@@ -35,14 +46,54 @@ def done(
         print(
             f"== IDE classes: {', '.join(module.name for module in refreshed)} target-ide/ now hold the build"
         )
-    entry = require_launch_entry(path, branch)
-    print(f"== launch entry: {entry.get('name')} (scene {entry.get('args')})")
-    shot = path / "tmp" / f"{branch}-launch.png"
-    shot.parent.mkdir(parents=True, exist_ok=True)
-    worktree.run_step("launch run", worktree.launch_command(path, entry, shot), path)
-    require_screenshot(path, branch)
+    if tests:
+        run_named_tests(path, tests)
+    entry = worktree.entry_for_ticket(path, branch) if tests else require_launch_entry(path, branch)
+    if entry is not None:
+        print(f"== launch entry: {entry.get('name')} (scene {entry.get('args')})")
+        shot = path / "tmp" / f"{branch}-launch.png"
+        shot.parent.mkdir(parents=True, exist_ok=True)
+        worktree.run_step("launch run", worktree.launch_command(path, entry, shot), path)
+    if not tests:
+        require_screenshot(path, branch)
     mark_review(branch)
     return 0
+
+
+def run_named_tests(path, tests):
+    """Run the ticket's verify-tests and refuse unless every selector ran a test and all passed.
+
+    The pom sets ``failIfNoSpecifiedTests=false``, which every module without a matching test
+    needs, so a misspelt selector passes Maven silently. The reports the run wrote are read
+    instead: each selector's class pattern must match a report, and zero tests run refuses.
+
+    :param path: the worktree directory
+    :param tests: Maven ``-Dtest`` selectors, such as ``GoldenFingerprintTest`` or ``Ring*Test#escape``
+    """
+    started = time.time()
+    worktree.run_step("named tests", ["mvn", "-q", "test", f"-Dtest={','.join(tests)}"], path)
+    run = failed = 0
+    classes = []
+    for report in path.glob("*/target/surefire-reports/TEST-*.xml"):
+        if report.stat().st_mtime < started:
+            continue
+        suite = ElementTree.parse(report).getroot()
+        run += int(suite.get("tests", 0))
+        failed += int(suite.get("failures", 0)) + int(suite.get("errors", 0))
+        classes.append(report.stem.removeprefix("TEST-").rsplit(".", 1)[-1])
+    unmatched = [
+        selector
+        for selector in tests
+        if not any(fnmatch.fnmatchcase(name, selector.split("#")[0]) for name in classes)
+    ]
+    if run == 0 or failed or unmatched:
+        raise SystemExit(
+            f"named tests {', '.join(tests)}: {run} run, {failed} failed"
+            + (f", no test matched {', '.join(unmatched)}" if unmatched else "")
+            + "; nothing marked. Fix the selectors with generate_board.py update "
+            "--remove-verify-test / --add-verify-test."
+        )
+    print(f"== named tests: {run} run, 0 failed")
 
 
 def require_no_leftover_diagnostics(path, branch):
