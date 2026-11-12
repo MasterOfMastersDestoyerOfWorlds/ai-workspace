@@ -24,9 +24,9 @@ def done(
 
     A ticket's ``verify-tests`` (Maven ``-Dtest`` selectors, set with ``generate_board.py update ID
     --add-verify-test GoldenFingerprintTest``) are run after the build and must pass with at least
-    one test run, so a misspelt selector refuses instead of passing with "Tests run: 0". Such a
-    ticket needs no screenshot, and its launch entry is run only when it has one. Every other
-    ticket's launch entry is run exactly as F5 runs it, only headless, so a crash on that path is
+    one test run, so a misspelt selector refuses instead of passing with "Tests run: 0". Tests
+    never stand in for the launch entry: every ticket needs one, so the user can see the work
+    with F5, and it is run exactly as F5 runs it, only headless, so a crash on that path is
     caught here and never at the user's keyboard, and tmp/ must hold a screenshot.
 
     After the build, each module's Maven classes are copied over the IDE's ``target-ide/``
@@ -48,14 +48,12 @@ def done(
         )
     if tests:
         run_named_tests(path, tests)
-    entry = worktree.entry_for_ticket(path, branch) if tests else require_launch_entry(path, branch)
-    if entry is not None:
-        print(f"== launch entry: {entry.get('name')} (scene {entry.get('args')})")
-        shot = path / "tmp" / f"{branch}-launch.png"
-        shot.parent.mkdir(parents=True, exist_ok=True)
-        worktree.run_step("launch run", worktree.launch_command(path, entry, shot), path)
-    if not tests:
-        require_screenshot(path, branch)
+    entry = require_launch_entry(path, branch)
+    print(f"== launch entry: {entry.get('name')} (scene {entry.get('args')})")
+    shot = path / "tmp" / f"{branch}-launch.png"
+    shot.parent.mkdir(parents=True, exist_ok=True)
+    worktree.run_step("launch run", worktree.launch_command(path, entry, shot), path)
+    require_screenshot(path, branch)
     mark_review(branch)
     return 0
 

@@ -49,9 +49,13 @@
   },
   "permissions": {
     "deny": [
-      "Bash(*mvn* -pl *)",
-      "Bash(*mvn* -pl=*)",
-      "Bash(*mvn* --projects*)",
+      "mcp__ccd_turn__wrap_up",
+      "AskUserQuestion",
+      "Artifact",
+      "ArtifactComments",
+      "ArtifactData",
+      "mcp__1a59c906-04da-521d-bda7-7f71b9f9e01c",
+      "Bash(*gh api *)",
       "Bash(*worktree_land.py*)",
       "Bash(land)",
       "Bash(land *)",

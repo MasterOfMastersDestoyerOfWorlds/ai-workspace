@@ -310,19 +310,21 @@ def last_agent_note(worktree, file_limit=200, min_age_seconds=MIN_TRANSCRIPT_AGE
     outranks one that merely ran commands against it (copying a fix out of another worktree, say).
     A subagent's transcript, which is an agent's own note, outranks a session transcript, which is
     the user's. A transcript still being written is the caller's own session, whose half-formed
-    last line is not a resume note, so anything touched in the last couple of minutes is skipped."""
+    last line is not a resume note, so anything touched in the last couple of minutes gives no
+    note. It still counts as a writer, though: when the only agent that wrote here is the one still
+    running, an agent that merely read from the worktree is not its history, so there is no note."""
     if not TRANSCRIPT_ROOT.is_dir():
         return None
     now = datetime.datetime.now().timestamp()
-    transcripts = [
-        path
-        for path in TRANSCRIPT_ROOT.rglob("*.jsonl")
-        if path.is_file() and now - path.stat().st_mtime >= min_age_seconds
-    ]
+    transcripts = [path for path in TRANSCRIPT_ROOT.rglob("*.jsonl") if path.is_file()]
     transcripts.sort(key=lambda path: (is_subagent_transcript(path), path.stat().st_mtime), reverse=True)
     fallback = None
+    written_here = False
     for path in transcripts[:file_limit]:
         writes, calls = worktree_activity(path, worktree)
+        written_here = written_here or bool(writes)
+        if now - path.stat().st_mtime < min_age_seconds:
+            continue
         if not writes and (calls < MIN_WORKTREE_CALLS or fallback is not None):
             continue
         note = dated_note(path)
@@ -331,7 +333,7 @@ def last_agent_note(worktree, file_limit=200, min_age_seconds=MIN_TRANSCRIPT_AGE
         if writes:
             return note
         fallback = note
-    return fallback
+    return None if written_here else fallback
 
 
 def dated_note(path):

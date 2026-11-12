@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 
 HYPRCTL = "hyprctl"
+OMARCHY_DEFAULT_BROWSER = "omarchy-cmd-default-browser"
 POLL_SECONDS = 0.25
 BROWSER_WAIT_SECONDS = 10
 EDITOR_WAIT_SECONDS = 20
@@ -27,7 +28,8 @@ APPLICATION_DIRS = (
     Path.home() / ".nix-profile/share/applications",
     Path("/usr/share/applications"),
 )
-CODE_CLASSES = ("code", "code-oss", "vscodium")
+# VS Code 1.144 reports its reverse-DNS app id as the Wayland class; older builds said "code".
+CODE_CLASSES = ("code", "code-oss", "vscodium", "com.microsoft.vscode")
 
 
 def available():
@@ -134,11 +136,16 @@ def show(workspace):
 
 
 def default_browser():
-    """The default browser's executable, read from its desktop file's ``Exec=`` line, or None."""
+    """The default browser's executable, read from its desktop file's ``Exec=`` line, or None.
+
+    Omarchy 4 makes its own ``omarchy-browser.desktop`` the default, which only relays links to
+    ``omarchy-launch-browser``; ``omarchy-cmd-default-browser`` names the browser behind it.
+    """
+    command = ["xdg-settings", "get", "default-web-browser"]
+    if shutil.which(OMARCHY_DEFAULT_BROWSER):
+        command = [OMARCHY_DEFAULT_BROWSER]
     try:
-        desktop = subprocess.run(
-            ["xdg-settings", "get", "default-web-browser"], capture_output=True, text=True, timeout=5
-        ).stdout.strip()
+        desktop = subprocess.run(command, capture_output=True, text=True, timeout=5).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return None
     for directory in APPLICATION_DIRS:

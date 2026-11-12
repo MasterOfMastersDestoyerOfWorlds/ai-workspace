@@ -18,6 +18,16 @@ method declared on a line the file's uncommitted diff adds is reported, so new c
 it is written and old code stays quiet. There is no opt-out comment. The visibility rule applies
 only under src/main/java, matching the build, which does not check test sources.
 
+The same pass runs MethodLength at 150 lines (master holds 36 methods past it, the longest 911,
+so the build cannot enforce it). A long method is reported when the change adds any line inside
+it, and the message asks for a rethink: repeated code and mixed jobs moved into reusable pieces
+with more than one user, not single-caller helpers that hide the same complexity. On 2026-10-31
+a 480-line node method and a method past HotSpot's 8000-byte JIT limit (about ten times slower,
+never compiled) both went through review unflagged.
+
+It also flags a hand-written union-find (a parent array walked to its root, or path-halved) and
+points at ixdar.numeric.graph.UnionFind: the same day a node re-implemented it inline.
+
 SingleCallerHelperCheck sees one file and so only private methods; on 2026-10-06 two agents made a
 one-caller helper public so a test could call it. A third pass covers that: every public method a
 main source adds is looked up across the checkout's src/main/java trees by name, and one with one
@@ -71,9 +81,25 @@ INCREMENTAL_CONFIGURATION_TEXT = """<?xml version="1.0"?>
   <module name="TreeWalker">
     <module name="ixdar.autofix.checkstyle.SingleCallerHelperCheck"/>
     <module name="ixdar.autofix.checkstyle.MethodVisibilityCheck"/>
+    <module name="MethodLength">
+      <property name="max" value="150"/>
+      <property name="tokens" value="METHOD_DEF,CTOR_DEF"/>
+      <message key="maxLen.method"
+               value="Method is {0} lines (rethink past {1}): a method this long hides its structure. Find the code it repeats and the separate jobs it mixes, and move each into a reusable piece with more than one user (an existing class or node, or a new named concept); splitting it into single-caller private helpers only hides the same complexity."/>
+    </module>
+    <module name="RegexpSinglelineJava">
+      <property name="id" value="InlineUnionFind"/>
+      <property name="format"
+                value="while\\s*\\(\\s*(\\w+)\\[(\\w+)\\]\\s*!=\\s*\\2\\s*\\)|(\\w+)\\[\\w+\\]\\s*=\\s*\\3\\[\\3\\["/>
+      <property name="ignoreComments" value="true"/>
+      <property name="message"
+                value="Hand-written union-find (a parent array walked to its root): use ixdar.numeric.graph.UnionFind (singletons, find, union, unionByRank, grow) instead. [InlineUnionFind]"/>
+    </module>
   </module>
 </module>
 """
+
+METHOD_LENGTH_SPAN = re.compile(r"Method is (?P<length>\d+) lines")
 
 VIOLATION_POSITION = re.compile(r"^[^:]+:(?P<line>\d+):")
 
@@ -284,7 +310,12 @@ def run_checkstyle(classpath, path, configuration=CHECKSTYLE_CONFIGURATION):
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise ClasspathUnavailable(f"checkstyle did not run ({error})") from error
-    return finished.stdout + finished.stderr
+    output = finished.stdout + finished.stderr
+    # A configuration checkstyle cannot load reports no violations at all, which would read as a
+    # clean file.
+    if "Unable to create Root Module" in output or "unable to parse configuration" in output:
+        raise ClasspathUnavailable(f"checkstyle could not load {configuration}: {output.strip()[:300]}")
+    return output
 
 
 def added_lines(path):
@@ -375,7 +406,12 @@ def new_method_violations(classpath, path):
         position = VIOLATION_POSITION.match(line)
         if position is None:
             continue
-        if added is not None and int(position.group("line")) not in added:
+        start = int(position.group("line"))
+        # A long method is reported when the change adds any line inside it, not only its
+        # declaration: methods grow long a few lines at a time.
+        span = METHOD_LENGTH_SPAN.search(line)
+        lines = range(start, start + int(span.group("length"))) if span else (start,)
+        if added is not None and not any(number in added for number in lines):
             continue
         if not main_source and line.endswith(METHOD_VISIBILITY_TAG):
             continue

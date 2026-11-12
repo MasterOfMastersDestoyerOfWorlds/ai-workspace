@@ -134,6 +134,17 @@ def bullet_list(items, render=e):
     return "<ul>" + "".join(f"<li>{render(item)}</li>" for item in items) + "</ul>"
 
 
+def user_message(message):
+    """A user message: the passage it replied to (its leading ``>`` lines) quoted above the words."""
+    lines = message.splitlines()
+    quoted = [line[1:].strip() for line in lines if line.startswith(">")]
+    words = "\n".join(line for line in lines if not line.startswith(">")).strip()
+    quote = (
+        f'<blockquote class="muted">{"<br>".join(e(line) for line in quoted)}</blockquote>' if quoted else ""
+    )
+    return quote + e(words).replace("\n", "<br>")
+
+
 def related_file(entry):
     """A related-files entry, linked into VS Code when it is an absolute path."""
     if ABSOLUTE_PATH.match(entry):
@@ -612,6 +623,10 @@ def render(ticket, ticket_path, worktree_path):
         f'<header><div class="id">{e(ticket_id)}</div><h1>{e(ticket.get("title", ticket_id))}</h1>'
         f'<div class="meta">{"".join(badges)}</div><div class="buttons">{"".join(buttons)}</div></header>',
         open_decisions(ticket),
+        section(
+            "What the user asked",
+            bullet_list(ticket.get("user-messages", []), user_message) if ticket.get("user-messages") else "",
+        ),
         context_section(ticket, Path(repo) if Path(repo).is_dir() else None),
         *diff_sections(str(ticket_id), worktree_path),
         section("Definition of done", numbered(ticket.get("definition-of-done", ""))),

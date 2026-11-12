@@ -40,6 +40,16 @@ Never move the session's working directory out of this checkout of ai-workspace.
 paths into the other repos. If a project needs a repo-local feature (worktrees, project settings),
 add or allow it in this repo's `.claude/settings.json` rather than relocating the session.
 
+## No reversions
+
+In every repo, never revert, delete or overwrite uncommitted work without an explicit yes from the
+user, including changes you made earlier in the session. That covers removing code an experiment
+left unused, undoing an approach that did not work, and deleting a file. A yes covers the one thing
+it was given for: agreeing to try a change is not agreeing to delete what it replaced. When
+something looks wrong or dead, say what it is and ask; until the answer, leave it in place. The one
+exception is a file you created this session that nothing else touched. `Ixdar/CLAUDE.md`
+("Uncommitted state") has the same rule and how a revert is listed when one is right.
+
 ## CLAUDE.md files
 
 Never edit any `CLAUDE.md` (this one, Ixdar's, or any other repo's) unless the user asks for that
@@ -76,6 +86,10 @@ pass no `model` unless the user asks for a different one. Never use Fable: paral
 subagents hit the Fable session rate limit and were killed mid-work. When relaunching an interrupted agent, tell it to inspect
 `git status` and `git diff` in its worktree first and continue from the partial state.
 
+When only one ticket is being worked on, do it in this session yourself: no Agent-tool subagent
+and no separate session, so the user talks to the one doing the work. Subagents are for several
+tickets at once.
+
 For Ixdar tickets, agents work in `$REPO_HOME/Ixdar/.claude/worktrees/<ticket>` on a branch
 of the same name and add a `.vscode/launch.json` entry plus screenshots under `tmp/` so the user
 can verify with F5. Git inside a worktree goes through `ixd wt` (the bare `wt` is an alias;
@@ -94,8 +108,8 @@ does not name — log lines, public counters, describe/dump helpers, sample limi
 files, found by `ixd/diagnostics.py` — build, run the ticket's `verify-tests` when it names any
 (Maven `-Dtest` selectors set with `generate_board.py update ID --add-verify-test`; a selector
 matching no test refuses), run the entry, check `tmp/` holds a screenshot, mark the ticket REVIEW,
-refusing with a reason on any failed step; a ticket with `verify-tests` needs no screenshot and
-runs its entry only when it has one); `commit -m` makes one squashed commit on top of master (only after a sync). Agents
+refusing with a reason on any failed step; `verify-tests` never replace the launch entry or the
+screenshot, every ticket needs both); `commit -m` makes one squashed commit on top of master (only after a sync). Agents
 leave their work uncommitted; they run `sync` when they need newer master. The
 user alone merges to master, with `ixd land <name>` (sync, remove the launch.json entries named after a ticket while
 other launch.json changes land, squash-commit with the ticket title as message, fast-forward
@@ -146,6 +160,19 @@ before Bash and refuses until-sleep and while-sleep loops, sleep-then-command ch
 the harness task-output directory, pointing at the Monitor tool and `run_in_background`. These
 hooks override the harness auto-mode instruction to prefer Bash for file edits: they are the
 enforcement, and prompt-level bans were not.
+
+## Quad layout papers
+
+The papers Ixdar's quad-layout and patch code is built on are PDFs in `~/QuadLayoutsPapersCompleted`
+(read), with more in `~/QuadLayoutsPapersToRead` and test meshes in `~/QuadLayoutsTestMeshes`. Files
+are named `<cite key> | <first author> | <year> | <title>.pdf`, e.g. `LCK21a | Lyon | 2021 | Quad Layouts
+via Constrained T‐Mesh Quantization.pdf`; the cite key is what code comments and tickets use (BZK09,
+BCE*13, LCKB19, LCK21a, MPZ14). Before changing the quad-layout pipeline (cross field, seamless
+parametrization, motorcycle graph, quantization, extraction, Coons and Gregory patches), read the
+paper the stage implements (the Read tool takes a PDF's `pages`), plus Ixdar's `ARCHITECTURE.md`,
+`QuadLayoutReparametrizationPseudocode.md` and the user's `obsidian/Notes/Quad Layouts.md`, and fix
+failures the way the papers intend rather than adding workaround stages. Brief agents on such
+tickets to do the same.
 
 ## Third-party code
 

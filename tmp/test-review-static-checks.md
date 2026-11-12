@@ -1,0 +1,27 @@
+# TOOL-56: static-check ideas for test robustness
+
+These ideas come from what the 21 reviewers found in the suite. Each one says what it detects,
+where it would live, and the cases found today.
+- **Where checks live:** most are single-file patterns, which fit as checkstyle modules in
+  autofix with test-source scope. The cross-file ones fit best next to `SingleCallerHelperCheck`
+  or in `ixd/diagnostics.py`.
+- **Priority:** the list is ordered by how much each check would have prevented.
+
+| # | Check | Detects | Where | Found today |
+|---|---|---|---|---|
+| 1 | **Geometry built in Java in tests** | `buildFromIndexedMesh(`, `bulkAllocate*(`, `new ArrayMesh(`, `new HalfEdgeMesh()` followed by `addVertex`/`addFace`, `new CornerUvField(`, `new <X>MeshNode()` with `MapNodeContext`/`.evaluate(`, and `GridMeshNode.triangulated(` under `test/` | checkstyle, scope `test/` | 60+ classes; this check enforces your DSL rule (criterion 9) mechanically |
+| 2 | **Test imports another test's builder** | a static import or call of a helper from another `unit.*` test class | checkstyle | `RingRegionsTest.cappedCylinder` (20 uses), `RingAnchorOrderTest.tube` (13), `RingRegionsUpdateTest.rowMask`, `HalfEdgeBulkBuildTest` |
+| 3 | **Production members only tests use** | a public or package member in `src/main` with no reference outside its own class except under `test/` | cross-file, beside `SingleCallerHelperCheck` | `GridMeshNode.triangulated`/`vertexId`/`rowCoordinate`, `dragArcEndOntoVertex`, `refactorizeHandle`, `projectHessian`, `extensionCount`, `directMatchCount`, `repeatedCornerReleaseCount`, `branchOfRegion`, `tightenedRing`, `CYCLE_VERTEX_DEGREE`, the `ModelCollection` cache accessors |
+| 4 | **No or weak assertion** | a `@Test` with no `assert*`/`assertThrows`/`fail` call; `assertTrue(x != null)`; only `> 0` or `Files.size(..) > 0`; `assertThrows` whose message is never checked; `assertTrue(!x)` | checkstyle | `DriftLocalizeScratchTest`, most benchmarks, `SplineRingChainTest` (×2), `SDFCircleTest` |
+| 5 | **Global state changed outside a shared extension** | `Platforms.init(`, `Proxy.newProxyInstance(Platform\|GL`, `CholeskyBackend.forceEjml =`, `System.setProperty(`, `Scene.instance =`, `Toggle` writes in a test body. Allowed only inside one shared JUnit extension that restores them. | checkstyle and a new `unit.PlatformExtension` | about 20 classes; it is the root of ENG-39 (failures that depend on test order) |
+| 6 | **Environment dependence** | `Path.of("src/…"\|"test/…")` relative to the working directory, `/home/` literals, `Thread.sleep(`, `System.nanoTime`/`currentTimeMillis` in assertions, `new Random()` without a seed, `System.getProperty(` for inputs, `Files.createTempDirectory` inside the repo | checkstyle | `PatchColoursTest` (**fails on master today**), `GltfMeshParserTest`, `GltfMaterialSlotTest`, `ModelLoadLedgerTest`, `ModelPathReopenTest`, benchmarks |
+| 7 | **Diagnostics in tests** | `System.out`/`System.err` and `printf` in `test/` | extend `ixd/diagnostics.py` to test sources, so `wt done` refuses them | `FlipGeodesicsTest`, `LoopThroughPointsTest`, `RingCandidatesTest`, `CarveOneToOneTest`, benchmarks |
+| 8 | **Reflection into internals** | `setAccessible(`, `getDeclaredField(` in tests | checkstyle | `GraphTopologyLoadTest` |
+| 9 | **Bit-exact numeric comparison** | `assertEquals(double, double)` with no delta, a delta of `0.0`, or `assertArrayEquals` on floats without a tolerance, comparing against a copied implementation | checkstyle | `CrossFieldAssemblyTest`, `DijkstraTest`, `TriangleSoupRingOrderTest` |
+| 10 | **Unnamed tolerances** | a numeric literal as the delta of an assert (criterion 2: a tolerance needs a name that explains it) | checkstyle, or a variant of `MagicNumber` | widespread |
+| 11 | **Oversized inputs** | a resolution or subdivision literal above a threshold (resolution > 48, subdivisions > 3) passed to a primitive or DSL string in a test; nested loops over `vertexCount()` | checkstyle (a heuristic) | `SilhouetteHullNodeTest` (`SKULL_RESOLUTIONS` up to 96, an O(V²) loop), `CreaseRingTest`, `StrokeSculptTest` (64) |
+| 12 | **Lint tests that run as unit tests** | tests that read source text by regex: `MeshNodeIndependenceTest` (2.2 s), `ColorOrderTest`, `PatchColoursTest.scalarShader…`, `PaletteRolesTest`, `FontAtlasPaddingTest`, `trackedCrawfishGraphsLoad…`, `RingLineNormalsTest` | move each rule into autofix checkstyle, then delete the test | 7 tests |
+| 13 | **Duplicated test helpers** | copy-paste across test classes: the Platform proxy setup, `cappedCylinder` ×3, the `countLive`/`eulerCharacteristic` helpers ×8, `buildGrid`/`vertex`/`unclaimedVertices` ×4, the anonymous `RingScene` ×5 | PMD CPD over `test/` with a token threshold | listed |
+| 14 | **Test time gate** (a build-time check rather than a static one) | any method over 50 ms or class over 100 ms, read from `surefire-reports`; `@Tag("heavy")` exempts it | an `ixd wt done` step, or a JUnit extension that warns | 64 classes over budget today |
+| 15 | **Benchmark placement** | `*Benchmark` or `@Tag("heavy")` classes under the default test source root; correctness tests under `test/benchmark/` | a Maven source set or module (TOOL-14) and a checkstyle path rule | all 24 benchmarks |
+| 16 | **Stale references in javadoc** | `{@link Grids}` and other links that resolve to nothing | the javadoc `-Xdoclint` reference check on test sources | 4 classes |

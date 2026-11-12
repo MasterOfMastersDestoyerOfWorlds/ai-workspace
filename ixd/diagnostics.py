@@ -16,7 +16,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-LOG_CALL = re.compile(r"\bPlatforms\.log\(|\bSystem\.(?:out|err)\.print|\.printStackTrace\(")
+LOG_CALL = re.compile(r"\bPlatforms\.(?:get\(\)\.)?log\(|\bSystem\.(?:out|err)\.print|\.printStackTrace\(")
 STRING_LITERAL = re.compile(r'"((?:[^"\\]|\\.)*)"')
 COUNTER_FIELD = re.compile(r"^\s*public\s+(?:int|long|float|double)\s+(\w*(?:Count|Ulps|Gap)|worst\w+)\s*;")
 DESCRIBE_METHOD = re.compile(r"\b(?:String|void)\s+((?:describe|dump)\w*)\s*\(")

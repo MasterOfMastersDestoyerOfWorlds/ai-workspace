@@ -173,6 +173,8 @@ def review(
     The page answers why, what, where and how fast before any diff is opened, in this order:
 
     - Open decisions: the ticket's unresolved ``unknowns``, in a highlighted box.
+    - What the user asked: the ticket's ``user-messages``, the user's own words that asked for it,
+      verbatim (``generate_board.py create`` requires one and checks it against the transcripts).
     - Context: the ticket's ``review-summary`` (what changed and why it is needed, at most 50
       words in 3 sentences, which ``generate_board.py`` enforces; set with ``generate_board.py update ID
       --review-summary @FILE``; a highlighted box says so when it is missing), the repo-plan phase

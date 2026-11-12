@@ -170,7 +170,7 @@ come from the same decorators the CLI itself is built from, so neither can drift
 Merge a worktree's change into the main branch and clean up after it.
 
 ```
-ixd land [WORKTREE_NAME] [--message MESSAGE] [--body BODY] [--keep-launch] [--keep-worktree] [--no-build] [--no-mark]
+ixd land [WORKTREE_NAME] [--message MESSAGE] [--body BODY] [--keep-launch] [--keep-worktree] [--no-build] [--no-mark] [--force] [--folded-into FOLDED-INTO]
 ```
 
 Once landed, a ``landed`` line goes to the workspace event log (``ixd/events.py``), which the
@@ -206,6 +206,16 @@ The main checkout is then recompiled: the VS Code Java extension does not notice
 changed underneath it, so the next F5 would otherwise run pre-merge classes and answer HTTP 404
 for routes that now exist.
 
+A worktree stacked on branches that have not landed (``wt new --base``) is refused, unless
+``--force``: then the worktree comes off its stack and lands as one commit holding every
+unlanded base under it, for when the top of a stack already carries all of its bases' work.
+Each base is then tagged ``folded/<name>`` at its tip, its worktree and branch are removed, and
+its ticket is marked DONE with a note naming the ticket it landed inside. It refuses while a
+base's worktree has uncommitted changes, which the land would leave behind.
+
+``--folded-into <branch>`` retires a worktree whose work already landed inside another one,
+the same way, without merging anything: for a base a ``--force`` land did not retire.
+
 | argument | default | meaning |
 | --- | --- | --- |
 | WORKTREE_NAME | — | worktree path or bare name, defaulting to the one holding the current directory |
@@ -215,6 +225,8 @@ for routes that now exist.
 | `--keep-worktree` | off | merge but leave the worktree and branch in place |
 | `--no-build` | off | skip recompiling the main checkout after the merge |
 | `--no-mark` | off | leave the ticket's status alone instead of marking it DONE |
+| `--force` | off | land a stacked worktree together with the unlanded bases it sits on |
+| `--folded-into` | — | the branch this worktree's work already landed inside; retire it, merge nothing |
 
 ## ninfer
 
@@ -256,6 +268,8 @@ ixd review [TICKET] [--no-editor] [--page-only]
 The page answers why, what, where and how fast before any diff is opened, in this order:
 
 - Open decisions: the ticket's unresolved ``unknowns``, in a highlighted box.
+- What the user asked: the ticket's ``user-messages``, the user's own words that asked for it,
+  verbatim (``generate_board.py create`` requires one and checks it against the transcripts).
 - Context: the ticket's ``review-summary`` (what changed and why it is needed, at most 50
   words in 3 sentences, which ``generate_board.py`` enforces; set with ``generate_board.py update ID
   --review-summary @FILE``; a highlighted box says so when it is missing), the repo-plan phase
@@ -503,9 +517,9 @@ REVIEW is a claim that the user can verify the work.
 
 A ticket's ``verify-tests`` (Maven ``-Dtest`` selectors, set with ``generate_board.py update ID
 --add-verify-test GoldenFingerprintTest``) are run after the build and must pass with at least
-one test run, so a misspelt selector refuses instead of passing with "Tests run: 0". Such a
-ticket needs no screenshot, and its launch entry is run only when it has one. Every other
-ticket's launch entry is run exactly as F5 runs it, only headless, so a crash on that path is
+one test run, so a misspelt selector refuses instead of passing with "Tests run: 0". Tests
+never stand in for the launch entry: every ticket needs one, so the user can see the work
+with F5, and it is run exactly as F5 runs it, only headless, so a crash on that path is
 caught here and never at the user's keyboard, and tmp/ must hold a screenshot.
 
 After the build, each module's Maven classes are copied over the IDE's ``target-ide/``
