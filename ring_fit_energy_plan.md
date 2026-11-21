@@ -43,6 +43,205 @@ and neither is the search for groove bottoms (that only feeds the field term, wh
 
 Fixing this is a change to the energy, not to the look: see the planned energy below.
 
+## Revised 2026-11-13: an ordered system with a global solve
+
+This replaces "The planned energy" below, which is kept for the record. That energy was built in
+the craw-106 worktree and passes 9 of the 14 fit tests; the five failures show it cannot pass
+them all, for two reasons that no choice of constants removes.
+
+### Why a weighted energy minimised by descent cannot pass every test
+
+1. **A weaker aim beats a stronger one, because the weights are finite.** Seen in the runs:
+   - a ring in its groove pulled up to three cross-sections out by another, uncovered groove;
+   - the slanted ring staying split across two grooves;
+   - a crease-mode ring growing a tongue toward the uncovered groove;
+   - a bisector's end left two tube sides off its groove;
+   - the midway ring's inside anchors dragged 6 degrees toward the empty groove.
+
+   In each, covering more groove won against staying in a groove. Any finite ratio between the
+   two has a geometry where the wrong one wins.
+2. **Descent only reaches what is downhill from where the ring was drawn.** Seen in the runs:
+   - the far ring never comes round to the empty groove (0 and 60 degree case);
+   - the slanted ring never moves its crossings to the trenches.
+
+   Both need a ring to pass through worse arrangements to reach a better one.
+
+Also, where a ring was drawn is not in the energy at all. It only acts through where descent
+starts, so "the nearer groove wins" cannot be the minimum of any energy without it.
+
+### The system: aims in strict order, no weights
+
+Each aim is decided only among the arrangements that are best for the aims above it. An order is
+what the weights were imitating; stated as an order it needs no numbers.
+
+1. **A ring lies along a groove.** For each ring, the share of its length that does not run
+   along a valley line:
+
+   $$
+   A(\gamma_i) \;=\; \frac{1}{L_i}\int_{\gamma_i} \big[\,x \text{ not on a valley line}\,\big]\,ds
+   $$
+
+   A point is on a valley line when the valley curvature there is higher than at the points on
+   both sides of it: a comparison, with no threshold. A share, not a length, so a ring gains
+   nothing by shrinking and a longer loop through trenches is as good as a shorter one. Two
+   rings cannot run along the same valley line, so no two rings take one groove.
+2. **A ring takes the nearest groove that is free.** Among arrangements equal in aim 1, the
+   total distance from each ring as drawn to the connected valley-line network it lands on is
+   least. This is the only place the drawn position enters.
+3. **On its network, a ring takes the loop that covers the most.** Where the valley lines
+   nearest a ring join into a network with more than one loop of the ring's kind (the trench
+   case), the loop is chosen that leaves the rest of the network nearest a ring.
+4. **A ring with no groove stands so the surface is covered evenly.** The rings left over are
+   placed so the farthest point of the surface from any ring is as near as it can be.
+
+### The global solve
+
+No descent from the drawn position. Three exact stages, each over everything at once:
+
+1. **Valley-line network.** The valley lines of the surface as a graph, with every loop of each
+   ring's kind (round the same part) and every path joining two rings a bisector ends on. These
+   are not declared grooves: they are the arrangements that make aim 1 zero.
+2. **Matching.** Rings are matched to networks, and loops chosen on each, by one minimum-cost
+   matching: aims 2 and 3. This is where "one ring per groove", "the nearer groove", "the far
+   ring comes round" and "through the trenches" are all decided together.
+3. **Even placement** of the rings left unmatched: aim 4, over the surface the matched rings
+   leave. The heat-method distance already built measures it.
+
+The fitted ring is then written back as anchors along its loop, so it stays an ordinary editable
+ring. The descent in `RingAnchorFit` is no longer what moves rings; the heat distance and the
+look-refresh hook are kept.
+
+### Which aim decides each test
+
+| Test | Decided by |
+|---|---|
+| One groove, ring a quarter away, nearly opposite, crease mode | 1 |
+| Two grooves, one ring: the nearer one | 1, then 2 |
+| Two grooves, two rings (near one, each near its own) | 1 and 2, matched together |
+| Grooves at 0 and 60 degrees, rings at 30 and 200 | 1 and 2, matched together |
+| One groove, two rings: one takes it, the other opposite | 1, then 4 |
+| Bisector beside a groove (grooved or smooth rings), ends included | 1 |
+| Ring round a horn | 1 |
+| Slanted ring, no trenches | 1: the whole ring in one groove; a split ring leaves the valley line twice |
+| Slanted ring, trenches | 1 ties; 2 ties (one network); 3 picks the stepped loop |
+
+### Open problem: which valley lines count
+
+The comparison in aim 1 is the groove-bottom test already in `RingAnchorFit`'s constructor with
+its three numbers taken out: the strength gate (`CREASE_STRENGTH`, 0.5), the margin
+(`BOTTOM_MARGIN`, 1.02) and how opposite the two neighbours must be (`ACROSS`, 0.7). What is new
+is the use, a graph that rings are matched onto instead of a pull added to a weighted sum, not
+the detection.
+
+Taking the strength gate out lets in every pock mark and ripple of a scan: a pit is higher in
+valley curvature than all its neighbours, so it passes in every direction. What keeps a ring off
+them is structure, not depth: a ring needs a valley line that closes a loop round its part, and a
+bisector one that joins its two rings, which a pock mark never does. That holds only while aim 1
+is all or nothing. Counted as a share, a ring with no groove would thread pock marks to raise
+it. A real groove whose valley line has gaps is then the unsolved case: bridging a gap and
+threading pock marks are the same operation.
+
+The valley curvature itself comes from `SurfaceCreases`, which already smooths over three mean
+edges and scales by the 95th percentile, so the fit is not free of picked numbers; it would stop
+adding its own.
+
+### Closeness and the artist's intent
+
+The rings are usually drawn close to their grooves and only need nudging in, and what the artist
+drew must be kept. The valley lines themselves know nothing of where a ring was drawn; closeness
+enters only in the matching, whose cost is each ring's distance to the loop it is given. So:
+
+- **Rings close to their grooves:** each ring's nearest loop is the one beside it, the matching
+  gives it that loop, and the result is a nudge. The matching differs from "each ring to its
+  nearest loop" only when two rings want the same loop.
+- **Fewer rings than loops:** every ring takes its nearest free loop and the other loops stay
+  empty. Nothing makes a ring cover a groove because it is there.
+- **More rings than loops:** the loops go to the rings so the total distance is least, and the
+  rings left over get no groove.
+- **What is never changed:** which part a ring goes round, the order of the rings along a part,
+  a ring's mode, label and number of anchors. The fitted ring stays an ordinary editable ring.
+
+Two corrections to the aims above follow from this:
+
+- **Aim 2 measures nearness to the loop, not to the connected network.** A plain torus has a
+  valley line of its own along the inside of the tube (the surface is concave there), which
+  joins every groove across the tube into one network, so nearness to a network would not tell
+  two grooves apart. With nearness to the loop, the trench fixture as drawn gives the whole ring
+  in the nearer groove, not the stepped ring. The trench case is parked until the simple cases
+  pass.
+- **Aim 4 conflicts with keeping what was drawn.** A ring that gets no groove was put where it
+  is by the artist, so it should stay there. The existing test
+  `ofTwoRingsOnATorusWithOneGrooveOneTakesItAndTheOtherStandsOpposite` asserts the opposite: the
+  leftover ring travels from 79 to 180 degrees. Recommended: the leftover ring stays as drawn,
+  aim 4 is dropped and that test's second assertion changes. Not changed without a yes.
+
+### Revised again: the unit is the stretch, not the ring
+
+Matching whole rings to closed valley loops does not survive two cases from real scans:
+
+- **A river or vein system** branches like a tree. A tree has no closed loop, so there is
+  nothing to match a ring to.
+- **A correct ring is often part over a groove and part over flat surface.** It is not a loop of
+  valley line, so all-or-nothing leaves it unfitted, and scoring by share would re-route the flat
+  part to wherever more valley line is.
+
+Both say the same thing: the drawn ring is the default, and only the stretches of it that lie in
+a groove move. So the aims above are replaced by one rule and one exception.
+
+**The nudge (local, per point).** Every point of a ring moves across its ring, uphill in valley
+curvature, and stops where the slope across the ring is zero:
+
+$$
+\frac{\partial \gamma}{\partial t} \;=\; \big(\nabla \kappa_v \cdot n\big)\, n
+$$
+
+with $n$ the direction across the ring within the surface. There is one field and no weight.
+
+- On a groove's flank the slope leads to the bottom, so the stretch slides in. How far a groove
+  reaches is its own concave width, not a radius.
+- On flat or convex surface there is no slope, so the stretch stays exactly as drawn.
+- At a branch, a stretch is on one branch's flank and follows that branch.
+- A ring that crosses a valley line (as every ring round a plain torus crosses the one along the
+  inside of the tube) has no slope across itself there, and does not turn to follow it.
+
+**The exception (global, whole rings).** A ring with no uphill slope anywhere along it touches no
+groove. It moves as a whole, keeping its shape, along the part it goes round to the nearest place
+where some stretch of it enters a groove no nearer ring takes; then the nudge applies. All such
+rings are matched to those places together, by least total distance. This is the only global
+solve, and the only place a ring travels far.
+
+What follows for the cases discussed:
+
+- **Slanted ring between two grooves:** each half slides into its own groove and the two
+  crossings stay as drawn. The ring stays split, because the artist drew it slanted. This
+  reverses the earlier recommendation of the whole ring in one groove.
+- **Trenches:** a crossing moves into a trench only if it was drawn on the trench's flank.
+  Parked.
+- **A ring that gets no groove** stays as drawn (still awaiting a yes, as above).
+- **Pock marks** would each tug a nearby stretch sideways. Out of scope until the fixtures pass.
+
+Not needed by this: the coverage term, the length and bend prices, the heat-method distance and
+the valley-loop graph. The look-refresh hook stays.
+
+### Order of work: fixtures only, simplest first
+
+The crawfish scans are out of scope until every fixture passes.
+
+1. One groove, one ring (a quarter away, nearly opposite).
+2. Two grooves, one ring: the nearer.
+3. Two grooves, two rings (each near its own, both near one, grooves at 0 and 60 degrees).
+4. One groove, two rings.
+5. The horn.
+6. Bisectors.
+7. Crease mode, the slanted ring, the trenches.
+
+### Not verified yet
+
+This is reasoning from the tests and the runs; none of it is built. To check first, before any
+solver: that the valley lines found by comparison alone are the groove bottoms on every fixture,
+and that on each fixture the expected arrangement is the best under the four aims among the
+alternatives.
+
 ## The planned energy
 
 The energy must be global: a groove pulls a ring from any distance (a ring nearly opposite a

@@ -7,7 +7,9 @@ from ...registry import CliOption, cli_command
 
 
 @cli_command
-def sync(worktree_name: Annotated[str, CliOption(positional=True)] = "", base: str = "") -> int:
+def sync(
+    worktree_name: Annotated[str, CliOption(positional=True)] = "", base: str = "", carry_base: bool = False
+) -> int:
     """Rebase the uncommitted change onto the main branch and leave it uncommitted again.
 
     Work is never lost: the change is parked in a temporary commit, replayed, then unpacked. A real
@@ -18,6 +20,13 @@ def sync(worktree_name: Annotated[str, CliOption(positional=True)] = "", base: s
     later syncs keep it there until the base lands. ``--base`` naming the main branch takes the
     worktree off its stack: only its own change moves onto the main branch, and it can land at once.
 
+    ``--carry-base`` takes a stacked worktree off its stack with its base brought along, for a base
+    that is not going to land first: the base's commits and the worktree's own change are replayed
+    onto the main branch together and unpacked as one uncommitted diff. The base's branch and
+    worktree are left exactly as they were. The stack is forgotten before the replay starts, so an
+    aborted ``--carry-base`` sync leaves the worktree unstacked where it was, and a plain sync
+    then carries the base the same way.
+
     Afterwards the tree is compiled and Maven's classes are copied over the IDE's ``target-ide/``,
     also when it was already on top of the main branch: VS Code compiles the annotation registries
     Maven generates rather than generating its own, and its own build can lag the latest edits, so
@@ -26,8 +35,17 @@ def sync(worktree_name: Annotated[str, CliOption(positional=True)] = "", base: s
 
     :param worktree_name: worktree path or bare name, defaulting to the one holding the current directory
     :param base: stack this worktree on that worktree branch from now on, or the main branch to unstack it
+    :param carry_base: unstack this worktree onto the main branch with its base's commits in its change
     """
     path, branch, main_branch = worktree.resolve_worktree(worktree_name)
+    if carry_base:
+        if base:
+            raise SystemExit("--carry-base always moves onto the main branch; drop --base")
+        if not worktree.stack_fork_of(path, branch):
+            raise SystemExit(f"{branch} is not stacked, so it has no base to carry")
+        for key in (worktree.BASE_KEY, worktree.FORK_KEY):
+            worktree.git(path, "config", "--unset", f"branch.{branch}.{key}", check=False)
+        main_branch = worktree.main_branch_of(path)
     if base:
         base = base.strip().lower()
         if base == branch or not worktree.git(

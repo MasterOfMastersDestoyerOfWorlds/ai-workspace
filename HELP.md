@@ -693,7 +693,7 @@ options:
 ```
 ### ixd wt sync
 ```
-usage: ixd wt sync [-h] [--base BASE] [worktree_name]
+usage: ixd wt sync [-h] [--base BASE] [--carry-base] [worktree_name]
 
 Rebase the uncommitted change onto the main branch and leave it uncommitted again.
 
@@ -704,6 +704,13 @@ A worktree stacked with ``wt new --base`` replays onto its base branch instead. 
 stacks an existing worktree the same way: only its own change moves onto the base's tip, and
 later syncs keep it there until the base lands. ``--base`` naming the main branch takes the
 worktree off its stack: only its own change moves onto the main branch, and it can land at once.
+
+``--carry-base`` takes a stacked worktree off its stack with its base brought along, for a base
+that is not going to land first: the base's commits and the worktree's own change are replayed
+onto the main branch together and unpacked as one uncommitted diff. The base's branch and
+worktree are left exactly as they were. The stack is forgotten before the replay starts, so an
+aborted ``--carry-base`` sync leaves the worktree unstacked where it was, and a plain sync
+then carries the base the same way.
 
 Afterwards the tree is compiled and Maven's classes are copied over the IDE's ``target-ide/``,
 also when it was already on top of the main branch: VS Code compiles the annotation registries
@@ -719,4 +726,6 @@ options:
   -h, --help     show this help message and exit
   --base BASE    stack this worktree on that worktree branch from now on, or
                  the main branch to unstack it
+  --carry-base   unstack this worktree onto the main branch with its base's
+                 commits in its change
 ```
