@@ -46,9 +46,12 @@ def run_code(arguments, cwd):
     :param cwd: an existing directory to run it from
     :return: the completed process, or None when it could not start or did not answer in time
     """
+    # On Windows ``code`` is ``code.cmd``, which subprocess finds without a shell only by its
+    # full path; on PATH lookup failure the bare name is tried as before.
+    program = shutil.which(CODE) or CODE
     try:
         return subprocess.run(
-            [CODE, *arguments], cwd=str(cwd), capture_output=True, text=True, timeout=CODE_TIMEOUT_SECONDS
+            [program, *arguments], cwd=str(cwd), capture_output=True, text=True, timeout=CODE_TIMEOUT_SECONDS
         )
     except (OSError, subprocess.SubprocessError):
         return None

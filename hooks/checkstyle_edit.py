@@ -28,6 +28,16 @@ never compiled) both went through review unflagged.
 It also flags a hand-written union-find (a parent array walked to its root, or path-halved) and
 points at ixdar.numeric.graph.UnionFind: the same day a node re-implemented it inline.
 
+Two more checks hold Ixdar CLAUDE.md's prose rules on added lines. SystemProperty flags a new
+System.getProperty (or Boolean.getBoolean and the like) knob, which the "No system properties"
+section forbids: on 2026-11-22 an agent added one for a debug flag. The comment pass flags a new //
+comment, which the "Comments" section defaults to none, and says where it sits: inside a method
+body it is LineComment (keep only a non-obvious why); outside one, at file level or between a
+class's members, it is CommentOutsideMethod, which has no legitimate use: the same agent moved a
+Javadoc past its length limit into // lines between the Javadoc and the class instead of
+shortening it. Braces are counted on the source with strings, characters and comments blanked, and
+a block opened after a class, interface, enum or record keyword is a type body.
+
 SingleCallerHelperCheck sees one file and so only private methods; on 2026-10-06 two agents made a
 one-caller helper public so a test could call it. A third pass covers that: every public method a
 main source adds is looked up across the checkout's src/main/java trees by name, and one with one
@@ -38,6 +48,7 @@ caller; methods carrying an annotation (@Override and the framework hooks) are s
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -95,6 +106,14 @@ INCREMENTAL_CONFIGURATION_TEXT = """<?xml version="1.0"?>
       <property name="message"
                 value="Hand-written union-find (a parent array walked to its root): use ixdar.numeric.graph.UnionFind (singletons, find, union, unionByRank, grow) instead. [InlineUnionFind]"/>
     </module>
+    <module name="RegexpSinglelineJava">
+      <property name="id" value="SystemProperty"/>
+      <property name="format"
+                value="\\b(System\\.getProperty|Boolean\\.getBoolean|Integer\\.getInteger|Long\\.getLong)\\s*\\("/>
+      <property name="ignoreComments" value="true"/>
+      <property name="message"
+                value="A system property knob: Ixdar CLAUDE.md (No system properties) forbids them. Make it a public field on the owning class with a behaviour-describing name, or delete the switch; only properties that choose an input file (ixdar.model, benchmark.off) are allowed."/>
+    </module>
   </module>
 </module>
 """
@@ -106,6 +125,21 @@ VIOLATION_POSITION = re.compile(r"^[^:]+:(?P<line>\d+):")
 METHOD_VISIBILITY_TAG = "[MethodVisibility]"
 
 MAIN_SOURCE_SEGMENT = os.path.join("src", "main", "java") + os.sep
+
+CHARACTER_OR_STRING_LITERAL = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
+
+TYPE_KEYWORD = re.compile(r"\b(?:class|interface|enum|record)\b")
+
+LINE_COMMENT_ADVICE = (
+    "A line comment in a method: Ixdar CLAUDE.md (Comments) defaults to none. Keep it only for a "
+    "non-obvious why (a hidden constraint, a citation, a workaround); otherwise delete it."
+)
+
+COMMENT_OUTSIDE_METHOD_ADVICE = (
+    "A // comment outside a method body (at file level or between a class's members): what a "
+    "class or member is goes in its Javadoc, shortened to fit the length limit, never in // lines "
+    "beside it. Fold it into the Javadoc or delete it."
+)
 
 PUBLIC_METHOD = re.compile(
     r"^\s*public\s+(?:(?:static|final|synchronized|native|abstract|default)\s+)*"
@@ -206,9 +240,13 @@ def autofix_artifact_jar(version):
 
 
 def run_build_classpath(pom_path, output_path, offline):
-    """Asks maven for a pom's runtime classpath, returning True when it wrote the file."""
+    """Asks maven for a pom's runtime classpath, returning True when it wrote the file.
+
+    The executable is resolved through PATH first: on Windows maven is ``mvn.cmd``, which a bare
+    ``mvn`` never starts without a shell, and the failure would read as an unresolvable classpath.
+    """
     command = [
-        "mvn",
+        shutil.which("mvn") or "mvn",
         "-B",
         "-q",
         "dependency:build-classpath",
@@ -492,13 +530,76 @@ def public_single_caller_violations(root, path):
     return reports
 
 
+def comment_violations(path):
+    """Returns the // comments this change adds, named by whether they sit in a method body."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            source = handle.read().splitlines()
+    except OSError:
+        return []
+    added = added_lines(path)
+    name = os.path.basename(path)
+    type_bodies = []
+    pending = ""
+    in_block_comment = False
+    reports = []
+    for number, raw in enumerate(source, start=1):
+        line = CHARACTER_OR_STRING_LITERAL.sub('""', raw)
+        comment_at = None
+        index = 0
+        while index < len(line):
+            if in_block_comment:
+                end = line.find("*/", index)
+                if end < 0:
+                    break
+                in_block_comment = False
+                index = end + 2
+                continue
+            if line.startswith("/*", index):
+                in_block_comment = True
+                index += 2
+                continue
+            if line.startswith("//", index):
+                comment_at = index
+                break
+            character = line[index]
+            if character == "{":
+                type_bodies.append(bool(TYPE_KEYWORD.search(pending)))
+                pending = ""
+            elif character == "}":
+                if type_bodies:
+                    type_bodies.pop()
+                pending = ""
+            elif character == ";":
+                pending = ""
+            else:
+                pending += character
+            index += 1
+        if comment_at is None or (added is not None and number not in added):
+            continue
+        if not type_bodies or type_bodies[-1]:
+            reports.append(f"{name}:{number}: {COMMENT_OUTSIDE_METHOD_ADVICE} [CommentOutsideMethod]")
+        else:
+            reports.append(f"{name}:{number}: {LINE_COMMENT_ADVICE} [LineComment]")
+    return reports
+
+
 def violation_lines(output, path):
-    """Extracts the reported violations, shortening the repeated absolute path."""
+    """Extracts the reported violations, shortening the repeated absolute path.
+
+    Checkstyle prints the path with the platform's separators, which need not match the event's;
+    an unshortened Windows path would also break VIOLATION_POSITION on its drive-letter colon.
+    """
+    name = os.path.basename(path)
+    spellings = {path, os.path.normpath(path), os.path.abspath(path)}
     lines = []
     for raw in output.splitlines():
         match = VIOLATION_LINE.match(raw.strip())
         if match:
-            lines.append(match.group("body").replace(path + ":", os.path.basename(path) + ":"))
+            body = match.group("body")
+            for spelling in spellings:
+                body = body.replace(spelling + ":", name + ":")
+            lines.append(body)
     return lines
 
 
@@ -526,7 +627,11 @@ def main():
     try:
         classpath = resolve_classpath(pom_text)
         violations = violation_lines(run_checkstyle(classpath, path), path)
-        methods = new_method_violations(classpath, path) + public_single_caller_violations(root, path)
+        methods = (
+            new_method_violations(classpath, path)
+            + public_single_caller_violations(root, path)
+            + comment_violations(path)
+        )
     except ClasspathUnavailable as error:
         if already_warned(event):
             return 0
@@ -542,7 +647,7 @@ def main():
     if methods:
         reported = "\n".join(f"  {line}" for line in methods)
         sections.append(
-            f"new methods in {os.path.basename(path)} (edit-time only; the build does not check "
+            f"new code in {os.path.basename(path)} (edit-time only; the build does not check "
             f"these, but fix them now):\n{reported}"
         )
     if sections:

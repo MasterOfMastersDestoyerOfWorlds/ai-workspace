@@ -423,7 +423,7 @@ def rebuild_main_checkout(main_checkout):
     # worktree shares at one version.
     command = ["mvn", "-q", "compile"]
     print(f"== rebuild {main_checkout} ({' '.join(command)})")
-    result = subprocess.run(command, cwd=str(main_checkout), capture_output=True, text=True)
+    result = subprocess.run(worktree.resolved(command), cwd=str(main_checkout), capture_output=True, text=True)
     if result.returncode != 0:
         raise SystemExit(
             "rebuild failed (the merge itself is done):\n" + (result.stderr or result.stdout).strip()[-3000:]

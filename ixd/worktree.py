@@ -37,10 +37,11 @@ TICKET_REPO = CODE_ROOT / "ixdar-tickets"
 TRANSCRIPT_ROOT = Path.home() / ".claude" / "projects"
 WORKTREE_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 TICKET_ENTRY_NAME = re.compile(r"^\s*([A-Za-z]+)-\d+\b")
-# The same vmArgs the hand-written entries in Ixdar's launch.json carry, profiler agent first, so an
-# agent's entry runs exactly like the user's own; `ixd wt new` links the profiler the token needs.
+# The same vmArgs the hand-written entries in Ixdar's launch.json carry, so an agent's entry runs
+# exactly like the user's own. No profiler agent: the app profiles itself (TOOL-61), because a
+# -agentpath to a missing library stops the JVM, and async-profiler has no Windows build.
 LAUNCH_VM_ARGS = (
-    "${config:java.profiler.args} -XX:ErrorFile=target/hs_err_pid%p.log -enableassertions "
+    "-XX:ErrorFile=target/hs_err_pid%p.log -enableassertions "
     "-XX:+IgnoreUnrecognizedVMOptions -XstartOnFirstThread "
     "-Dsun.awt.noerasebackground=true -Dorg.lwjgl.util.DebugLoader=true"
 )
@@ -910,7 +911,7 @@ def link_profiler(worktree):
         command = [str(script)]
     else:
         return
-    result = subprocess.run(command, cwd=str(worktree), capture_output=True, text=True)
+    result = subprocess.run(resolved(command), cwd=str(worktree), capture_output=True, text=True)
     if result.returncode != 0:
         reason = (result.stderr.strip().splitlines() or ["no output"])[-1]
         print(f"seed:     profiler link failed ({reason}); launch entries with the profiler will not start")
@@ -1034,7 +1035,7 @@ def rebuild_for_ide(worktree):
         print("== build: no pom.xml here, skipped")
         return True
     print(f"== build: {' '.join(command)}")
-    result = subprocess.run(command, cwd=str(worktree), capture_output=True, text=True)
+    result = subprocess.run(resolved(command), cwd=str(worktree), capture_output=True, text=True)
     if result.returncode != 0:
         output = (result.stderr or result.stdout).strip()
         print(
@@ -1050,10 +1051,21 @@ def rebuild_for_ide(worktree):
     return True
 
 
+def resolved(command):
+    """The command with its program looked up on PATH, so Windows finds ``mvn.cmd`` and other
+    batch launchers that ``subprocess.run`` without a shell only finds as ``.exe``.
+
+    :param command: argv whose first entry is a program name or path
+    :return: the same argv, its first entry replaced by the full path when PATH has it
+    """
+    found = shutil.which(command[0])
+    return [found, *command[1:]] if found else list(command)
+
+
 def run_step(label, command, cwd):
     """Run one step of `done`, echoing it, and exit with its output when it fails."""
     print(f"== {label}: {' '.join(command)}")
-    result = subprocess.run(command, cwd=str(cwd), capture_output=True, text=True)
+    result = subprocess.run(resolved(command), cwd=str(cwd), capture_output=True, text=True)
     if result.returncode != 0:
         output = (result.stderr or result.stdout).strip()
         raise SystemExit(f"{label} failed; nothing marked.\n{output[-3000:]}")

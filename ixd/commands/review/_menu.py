@@ -1,6 +1,7 @@
 """A terminal menu picked with the arrow keys or by typing an entry's number.
 
-Stdlib only: the terminal is put in cbreak mode with ``termios`` and the menu is drawn on the
+Stdlib only: the terminal is put in cbreak mode with ``termios`` (on Windows, keys come from
+``msvcrt`` and the console is switched to ANSI processing) and the menu is drawn on the
 alternate screen, the way ``less`` does, so it leaves nothing in the scrollback. Every line is cut
 to the terminal width so none wraps, and a list taller than the terminal scrolls a window over the
 entries to keep the highlighted one in view. Off a terminal it falls back to a plain numbered
@@ -23,6 +24,13 @@ RESET = "\x1b[0m"
 ALTERNATE_SCREEN = "\x1b[?1049h"
 MAIN_SCREEN = "\x1b[?1049l"
 
+# msvcrt reports an arrow key as a prefix character then a scan code; map those to the ANSI
+# sequences the menu already understands.
+WINDOWS_KEY_PREFIXES = ("\x00", "\xe0")
+WINDOWS_SCAN_CODES = {"H": UP[0], "P": DOWN[0]}
+WINDOWS_STD_OUTPUT_HANDLE = -11
+WINDOWS_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+
 
 def fit(text, width):
     """One line cut to the width, with an ellipsis when it was longer."""
@@ -39,6 +47,31 @@ def read_key(fd):
         if key[-1].isalpha() or key[-1] == "~":
             break
     return key
+
+
+def read_windows_key(msvcrt):
+    """One keypress from the Windows console, an arrow key translated to its ANSI sequence."""
+    key = msvcrt.getwch()
+    if key in WINDOWS_KEY_PREFIXES:
+        return WINDOWS_SCAN_CODES.get(msvcrt.getwch(), "")
+    return key
+
+
+def enable_windows_ansi():
+    """Turn on ANSI escape handling for this console, so the highlight, the alternate screen and
+    the cursor moves draw instead of printing as text; the old console mode is returned so it
+    can be put back, or None when the console could not be switched.
+    """
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.GetStdHandle(WINDOWS_STD_OUTPUT_HANDLE)
+    mode = ctypes.c_ulong()
+    if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+        return None
+    if not kernel32.SetConsoleMode(handle, mode.value | WINDOWS_VIRTUAL_TERMINAL_PROCESSING):
+        return None
+    return handle, mode.value
 
 
 def block(entries, index, selected, width):
@@ -102,6 +135,8 @@ def pick(entries, prompt="open which? "):
         return None
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         return pick_plain(entries, prompt)
+    if sys.platform == "win32":
+        return pick_windows(entries, prompt)
     try:
         # Imported here: Windows has neither, and every ixd command imports this module.
         import termios
@@ -110,15 +145,43 @@ def pick(entries, prompt="open which? "):
         return pick_plain(entries, prompt)
     fd = sys.stdin.fileno()
     saved = termios.tcgetattr(fd)
-    selected, typed, first = 0, "", 0
     try:
         tty.setcbreak(fd)
+        return run_menu(entries, lambda: read_key(fd))
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+
+
+def pick_windows(entries, prompt):
+    """The menu on a Windows console (PowerShell, cmd, Windows Terminal): keys from ``msvcrt``,
+    drawing through the console's ANSI mode, the plain prompt when that mode cannot be set."""
+    import ctypes
+    import msvcrt
+
+    saved = enable_windows_ansi()
+    if saved is None:
+        return pick_plain(entries, prompt)
+    try:
+        return run_menu(entries, lambda: read_windows_key(msvcrt))
+    finally:
+        ctypes.windll.kernel32.SetConsoleMode(*saved)
+
+
+def run_menu(entries, next_key):
+    """Draw the menu and act on keys until one is picked or the user quits.
+
+    :param entries: each entry's lines, the first being its headline
+    :param next_key: reads one keypress, arrows as their ANSI sequences
+    :return: the picked index, or None
+    """
+    selected, typed, first = 0, "", 0
+    try:
         sys.stdout.write(ALTERNATE_SCREEN + "\x1b[?25l")
         while True:
             text, first = draw(entries, selected, typed, first, shutil.get_terminal_size())
             sys.stdout.write(text)
             sys.stdout.flush()
-            key = read_key(fd)
+            key = next_key()
             if key in ENTER:
                 return selected
             if key in QUIT:
@@ -138,6 +201,5 @@ def pick(entries, prompt="open which? "):
     except KeyboardInterrupt:
         return None
     finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
         sys.stdout.write("\x1b[?25h" + MAIN_SCREEN)
         sys.stdout.flush()

@@ -60,7 +60,8 @@ def added_java_lines(worktree):
             + ["--", "*.java"],
             env=env,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
         ).stdout
     return parse_added_lines(diff)
 
