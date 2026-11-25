@@ -50,6 +50,25 @@ something looks wrong or dead, say what it is and ask; until the answer, leave i
 exception is a file you created this session that nothing else touched. `Ixdar/CLAUDE.md`
 ("Uncommitted state") has the same rule and how a revert is listed when one is right.
 
+None of this applies inside a linked worktree under `<repo>/.claude/worktrees/`. The snapshot
+hook (see Hooks) saves the worktree before every tool call that reaches into it, so code deleted
+there is never lost. Agents delete, replace and undo freely in a worktree and say in their report
+what they removed. `ixd wt snapshots` and `ixd wt restore` bring any earlier state back. The rule
+still holds in the main checkouts and in this repo.
+
+## Experiments and diagnostics
+
+An experiment the user asked for is finished in one of two ways:
+- it shows the idea working in the engine (a scene run with a screenshot);
+- it brings concrete evidence that the idea cannot work (numbers and screenshots that show why).
+
+A result in between, or a list of options for the user to choose from, is not a finished
+experiment. Agents, and this session when it relays their reports, run every diagnostic,
+measurement and test the question needs without asking first. Each one's output goes under the
+worktree's `tmp/` and is named in the report, so the evidence stays visible after the diagnostic
+code is gone. What still comes to the user: choosing between approaches once the evidence is in,
+and anything the permission check refused.
+
 ## CLAUDE.md files
 
 Never edit any `CLAUDE.md` (this one, Ixdar's, or any other repo's) unless the user asks for that
@@ -107,9 +126,19 @@ intact) and `wt done <ticket>` (sync, refuse debugging scaffolding the ticket's 
 does not name — log lines, public counters, describe/dump helpers, sample limits, `*Probe.java`
 files, found by `ixd/diagnostics.py` — build, run the ticket's `verify-tests` when it names any
 (Maven `-Dtest` selectors set with `generate_board.py update ID --add-verify-test`; a selector
-matching no test refuses), run the entry, check `tmp/` holds a screenshot, mark the ticket REVIEW,
+matching no test refuses), time the ticket's `perf-benchmarks` against master (selectors set with
+`generate_board.py update ID --add-perf-benchmark`, required when the diff touches any `src/main`;
+`ixd/perf.py` runs master's side twice in the detached `.claude/worktrees/.perf-baseline` checkout,
+caches it per master commit, and refuses a failure or a regression beyond the two runs' spread
+that the DoD does not accept with `Accepts perf regression <Selector>: <reason>`), run the entry,
+check `tmp/` holds a screenshot, mark the ticket REVIEW,
 refusing with a reason on any failed step; `verify-tests` never replace the launch entry or the
-screenshot, every ticket needs both); `commit -m` makes one squashed commit on top of master (only after a sync). Agents
+screenshot, every ticket needs both); `wt perf <ticket>` runs that benchmark check alone and never
+marks the ticket; `wt new` and `wt status` also print a `papers:` list, the code whose comments
+cite each of the ticket's cite keys with the section (`ixd/citations.py`; keys from the paper file
+names, the ticket's text and `generate_board.py update ID --add-cite-key`); `wt snapshots <ticket>` lists the states the snapshot hook
+saved and `wt restore <ticket> <n> <path>` copies a file or directory back out of one;
+`commit -m` makes one squashed commit on top of master (only after a sync). Agents
 leave their work uncommitted; they run `sync` when they need newer master. The
 user alone merges to master, with `ixd land <name>` (sync, remove the launch.json entries named after a ticket while
 other launch.json changes land, squash-commit with the ticket title as message, fast-forward
@@ -144,14 +173,31 @@ nested `Ixdar/ixdar-tickets` submodule is dead; do not use it.
 
 ## Hooks
 
-`hooks/` holds three plain-python Claude Code hooks, wired through the `hooks` key of
-`.claude/settings.json`. `checkstyle_edit.py` runs after Edit and
+`hooks/` holds plain-python Claude Code hooks, wired through the `hooks` key of
+`.claude/settings.json`.
+
+`snapshot_edit.py` runs before Edit, Write, MultiEdit, NotebookEdit and Bash. It acts when the call
+reaches into a linked worktree: the file it edits, a worktree path in the shell command, or a
+command started inside one. It then saves the worktree's files, new ones included and ignored
+ones (`tmp/`, `target/`) left out, as a commit built through a temporary index, kept by
+`refs/snapshots/<branch>/<n>`.
+- It never touches the working files, the index, HEAD or the branch.
+- It skips the snapshot when nothing changed, never blocks the call, and costs about 0.4 s.
+- The refs live in the shared repository, so they outlive `land` and `wt archive`.
+- The engine is `ixd/snapshots.py`; `ixd wt snapshots` and `ixd wt restore` read it back.
+
+`jfr_guard.py` refuses Java Flight Recorder before Bash and points at async-profiler.
+`land_events.py` (UserPromptSubmit) tells a session what the user landed or archived since its
+last prompt.
+
+`checkstyle_edit.py` runs after Edit and
 Write: when the edited file is a `.java` file under an Ixdar checkout or worktree it audits that
 one file with the configuration the build uses (`checkstyle.xml` off the autofix-tool artifact,
 classpath cached in `~/.cache/ai-workspace-hooks/`) and returns the violations in about a second,
 so JavadocDescriptionLength no longer costs a module compile. It also runs SingleCallerHelperCheck,
-which the build leaves off, incrementally: only private single-caller methods declared on lines
-the file's uncommitted diff adds are reported; there is no opt-out. `shell_edit_guard.py` runs before
+which the build leaves off, incrementally: only private methods with one or two callers declared
+on lines the file's uncommitted diff adds are reported (a public one with two or fewer call sites,
+all in its own file, likewise); there is no opt-out. `shell_edit_guard.py` runs before
 Bash and refuses `sed -i`, `awk -i inplace`, `perl -pi`, python heredocs and `python -c` that
 write files, and `cat`, `tee` or a redirection onto a tracked source path, pointing at Edit and
 Write instead; it also refuses `cat` of four or more repository files, pointing at Read. Shell

@@ -2,7 +2,7 @@
 
 from typing import Annotated, Literal
 
-from ... import worktree
+from ... import citations, worktree
 from ...registry import CliOption, cli_command
 
 
@@ -20,6 +20,11 @@ def new(
     rewrapped line reads as unchanged there. The
     brief that is printed is everything an agent needs to start: the paths, the ticket file, the
     verbs, and what is denied.
+
+    When the ticket names papers (cite keys such as ``L03`` or ``LCK21a`` in its title, description,
+    definition of done or ``cite-keys`` field, or an author and year such as "Liepa 2003"), the brief
+    ends with every file, class and method whose comments or Javadoc cite each paper, and the
+    section each cites, so the agent starts from what already implements the paper.
 
     With ``--base`` the worktree is stacked on another worktree's branch instead: it starts from that
     branch's tip, and `sync`, `commit` and `done` replay onto the base rather than the main branch,
@@ -69,4 +74,6 @@ def new(
         )
     worktree.seed_environment(path)
     print(worktree.brief_text(path, name, start))
+    for line in citations.report_lines(path, worktree.ticket_for(name)):
+        print(line)
     return 0

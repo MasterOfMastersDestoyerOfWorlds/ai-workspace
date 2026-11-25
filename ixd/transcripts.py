@@ -87,8 +87,7 @@ def context_tokens(path):
     """(latest, peak) context size in tokens, read from the usage of each assistant message.
 
     The context an agent carries is its whole prompt: fresh input plus what the cache wrote and
-    read. Past about 200k tokens an agent slows and forgets, which is the point to stop it and
-    relaunch it fresh from ``ixd wt status``.
+    read.
 
     :param path: transcript to read
     :return: the last and the largest prompt size, 0 when the transcript has no usage
@@ -122,8 +121,7 @@ def summarise(path, calls, top, idle):
         + "  ".join(f"{n} {k}" for k, n in collections.Counter(c[1] for c in calls).most_common())
     )
     latest, peak = context_tokens(path)
-    warning = "  (past 200k: stop and relaunch fresh from `ixd wt status`)" if latest > 200_000 else ""
-    print(f"context {latest // 1000}k tokens now, {peak // 1000}k peak{warning}")
+    print(f"context {latest // 1000}k tokens now, {peak // 1000}k peak")
 
     def describe(name, inp):
         text = inp.get("command") if name == "Bash" else (inp.get("file_path") or inp.get("pattern") or "")

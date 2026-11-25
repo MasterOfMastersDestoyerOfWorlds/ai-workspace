@@ -1,0 +1,44 @@
+!SESSION 2026-11-22 20:49:26.757 -----------------------------------------------
+eclipse.buildId=unknown
+java.version=25.0.5.1
+java.vendor=Eclipse Adoptium
+BootLoader constants: OS=win32, ARCH=x86_64, WS=win32, NL=en_US
+Framework arguments:  -application org.eclipse.mat.api.parse C:/Code/Ixdar/.claude/worktrees/craw-127/tmp/heap/before-relax.hprof -command=path2gc 0x675c7a988 -format=txt -unzip org.eclipse.mat.api:query
+Command-line arguments:  -os win32 -ws win32 -arch x86_64 -consoleLog -application org.eclipse.mat.api.parse C:/Code/Ixdar/.claude/worktrees/craw-127/tmp/heap/before-relax.hprof -command=path2gc 0x675c7a988 -format=txt -unzip org.eclipse.mat.api:query
+
+!ENTRY org.eclipse.mat.report 4 0 2026-11-22 20:49:27.892
+!MESSAGE Ignoring result of 'Query Command' due to java.lang.RuntimeException: Error setting heap objects to field 'object'
+!STACK 0
+org.eclipse.mat.SnapshotException: java.lang.RuntimeException: Error setting heap objects to field 'object'
+	at org.eclipse.mat.internal.snapshot.HeapObjectArgumentFactory.build(HeapObjectArgumentFactory.java:90)
+	at org.eclipse.mat.query.registry.ArgumentSet.execute(ArgumentSet.java:100)
+	at org.eclipse.mat.query.registry.CommandLine.execute(CommandLine.java:95)
+	at org.eclipse.mat.report.internal.QueryPart.execute(QueryPart.java:108)
+	at org.eclipse.mat.report.internal.SectionPart.execute(SectionPart.java:70)
+	at org.eclipse.mat.report.TestSuite.execute(TestSuite.java:134)
+	at org.eclipse.mat.internal.apps.ParseSnapshotApp.runReport(ParseSnapshotApp.java:201)
+	at org.eclipse.mat.internal.apps.ParseSnapshotApp.parse(ParseSnapshotApp.java:177)
+	at org.eclipse.mat.internal.apps.ParseSnapshotApp.start(ParseSnapshotApp.java:112)
+	at org.eclipse.equinox.internal.app.EclipseAppHandle.run(EclipseAppHandle.java:219)
+	at org.eclipse.core.runtime.internal.adaptor.EclipseAppLauncher.runApplication(EclipseAppLauncher.java:149)
+	at org.eclipse.core.runtime.internal.adaptor.EclipseAppLauncher.start(EclipseAppLauncher.java:115)
+	at org.eclipse.core.runtime.adaptor.EclipseStarter.run(EclipseStarter.java:467)
+	at org.eclipse.core.runtime.adaptor.EclipseStarter.run(EclipseStarter.java:298)
+	at java.base/jdk.internal.reflect.DirectMethodHandleAccessor.invoke(DirectMethodHandleAccessor.java:104)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:565)
+	at org.eclipse.equinox.launcher.Main.invokeFramework(Main.java:615)
+	at org.eclipse.equinox.launcher.Main.basicRun(Main.java:563)
+	at org.eclipse.equinox.launcher.Main.run(Main.java:1415)
+Caused by: java.lang.RuntimeException: org.eclipse.mat.SnapshotException: Object 0x675c7a988 not found.
+	at org.eclipse.mat.internal.snapshot.HeapObjectParamArgument$IteratorImpl.getNext(HeapObjectParamArgument.java:351)
+	at org.eclipse.mat.internal.snapshot.HeapObjectParamArgument$IteratorImpl.<init>(HeapObjectParamArgument.java:287)
+	at org.eclipse.mat.internal.snapshot.HeapObjectParamArgument$1.iterator(HeapObjectParamArgument.java:244)
+	at org.eclipse.mat.internal.snapshot.HeapObjectParamArgument$1.getIds(HeapObjectParamArgument.java:230)
+	at org.eclipse.mat.internal.snapshot.HeapObjectParamArgument.asIntegerArray(HeapObjectParamArgument.java:108)
+	at org.eclipse.mat.internal.snapshot.HeapObjectArgumentFactory.build(HeapObjectArgumentFactory.java:80)
+	... 18 more
+Caused by: org.eclipse.mat.SnapshotException: Object 0x675c7a988 not found.
+	at org.eclipse.mat.parser.internal.SnapshotImpl.mapAddressToId(SnapshotImpl.java:1810)
+	at org.eclipse.mat.internal.snapshot.HeapObjectParamArgument$IteratorImpl.collectObjectsByAddress(HeapObjectParamArgument.java:445)
+	at org.eclipse.mat.internal.snapshot.HeapObjectParamArgument$IteratorImpl.getNext(HeapObjectParamArgument.java:336)
+	... 23 more

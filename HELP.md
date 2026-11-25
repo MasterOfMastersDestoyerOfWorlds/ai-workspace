@@ -25,8 +25,8 @@ positional arguments:
     stats     Print wall time by activity, thinking pauses, slow calls, errors
               and repeated command shapes.
     wt        abort, archive, clusters, commit, continue, done, launch-add,
-              launch-list, new, stage-checkpoint, stage-cluster, stage-like,
-              stage-moves, status, sync
+              launch-list, new, perf, reset, restore, snapshots, stage-
+              checkpoint, stage-cluster, stage-like, stage-moves, status, sync
 
 options:
   -h, --help  show this help message and exit
@@ -77,7 +77,11 @@ Once landed, a ``landed`` line goes to the workspace event log (``ixd/events.py`
 Six steps, each refusing to continue on failure. Replay the change onto the current main branch.
 Remove every .vscode/launch.json entry named after a ticket (``PATCH-117: quad-layout``), the
 F5 verification aids ``wt launch-add`` writes, while other launch.json changes, such as a new
-scene's entry, land. Squash the diff into one commit. Fast-forward the main checkout. Remove
+scene's entry, land. Squash the diff into one commit. Fast-forward the main checkout, then
+record the benchmark times the worktree's last ``wt perf`` or ``wt done`` measured
+(``tmp/<branch>-perf.json``) as master's baseline in ``<ticket store>/perf/``, per selector its
+mean, noise, runs, machine, date and the landed commit, skipping a benchmark whose reached code
+differs from what was measured; ``wt perf`` then reuses it instead of running master. Remove
 the worktree and its branch. Mark the branch's ticket DONE, which happens after the removal so
 the ticket CLI's unmerged-worktree guard sees the landed state.
 
@@ -326,44 +330,53 @@ options:
 usage: ixd wt [-h] subcommand ...
 
 wt: abort, archive, clusters, commit, continue, done, launch-add, launch-list,
-new, stage-checkpoint, stage-cluster, stage-like, stage-moves, status, sync
+new, perf, reset, restore, snapshots, stage-checkpoint, stage-cluster, stage-
+like, stage-moves, status, sync
 
 positional arguments:
   subcommand
-    abort           Abandon an interrupted sync and restore the state the
-                    worktree was in before it.
-    archive         Commit a worktree's change, tag it archive/<name>, remove
-                    the worktree, mark the ticket ARCHIVED.
-    clusters        List the change's hunks grouped by the edit they make,
-                    with the rest as unclustered.
-    commit          Make one squashed commit of the whole diff on top of the
-                    main branch.
-    continue        After the conflict markers are gone, finish the
-                    interrupted sync.
-    done            Sync, refuse leftover diagnostics, build, run the named
-                    tests and the launch entry, check tmp/, mark REVIEW.
-    launch-add      Add one entry to the worktree's .vscode/launch.json,
-                    keeping the file's comments.
-    launch-list     Print the launch entry names this worktree offers, with
-                    their scene arguments.
-    new             Create the worktree and branch off the main branch, seed
-                    it, and print the agent brief.
-    stage-checkpoint
-                    Stage the change as it stood at ``<checkpoint>``, leaving
-                    everything since unstaged.
-    stage-cluster   Stage exactly one cluster's hunks, numbered as ``ixd wt
-                    clusters`` lists them.
-    stage-like      Stage every hunk in the cluster of the hunk at
-                    ``<file>:<line>``, the line the cursor is on.
-    stage-moves     Uncommit the change, stage its move hunks, and leave every
-                    code hunk unstaged for review.
-    status          Show the branch, its refs, the changed files, added
-                    diagnostics, and the last agent note.
-    sync            Rebase the uncommitted change onto the main branch and
-                    leave it uncommitted again.
+    abort             Abandon an interrupted sync and restore the state the
+                      worktree was in before it.
+    archive           Commit a worktree's change, tag it archive/<name>,
+                      remove the worktree, mark the ticket ARCHIVED.
+    clusters          List the change's hunks grouped by the edit they make,
+                      with the rest as unclustered.
+    commit            Make one squashed commit of the whole diff on top of the
+                      main branch.
+    continue          After the conflict markers are gone, finish the
+                      interrupted sync.
+    done              Sync, refuse leftover diagnostics, build, run the named
+                      tests, time the benchmarks, run the launch entry, check
+                      tmp/, mark REVIEW.
+    launch-add        Add one entry to the worktree's .vscode/launch.json,
+                      keeping the file's comments.
+    launch-list       Print the launch entry names this worktree offers, with
+                      their scene arguments.
+    new               Create the worktree and branch off the main branch, seed
+                      it, and print the agent brief.
+    perf              Run the ticket's perf-benchmarks in the worktree,
+                      compare with master's baseline, refuse a regression.
+    reset             Snapshot the whole uncommitted change, then reset the
+                      worktree to the commit it sits on.
+    restore           Copy a file or directory as it stood in snapshot
+                      ``<number>`` back into the worktree.
+    snapshots         List a worktree's snapshots, newest first, with the
+                      files each one changed.
+    stage-checkpoint  Stage the change as it stood at ``<checkpoint>``,
+                      leaving everything since unstaged.
+    stage-cluster     Stage exactly one cluster's hunks, numbered as ``ixd wt
+                      clusters`` lists them.
+    stage-like        Stage every hunk in the cluster of the hunk at
+                      ``<file>:<line>``, the line the cursor is on.
+    stage-moves       Uncommit the change, stage its move hunks, and leave
+                      every code hunk unstaged for review.
+    status            Show the branch, its refs, the changed files, added
+                      diagnostics, cited papers, and the last agent note.
+    sync              Rebase the uncommitted change onto the main branch and
+                      leave it uncommitted again.
 
 options:
-  -h, --help        show this help message and exit
+  -h, --help          show this help message and exit
 ```
 ### ixd wt abort
 ```
@@ -492,9 +505,9 @@ options:
 ```
 ### ixd wt done
 ```
-usage: ixd wt done [-h] [worktree_name]
+usage: ixd wt done [-h] [--fresh-baseline] [worktree_name]
 
-Sync, refuse leftover diagnostics, build, run the named tests and the launch entry, check tmp/, mark REVIEW.
+Sync, refuse leftover diagnostics, build, run the named tests, time the benchmarks, run the launch entry, check tmp/, mark REVIEW.
 
 Log lines, public counters, describe/dump helpers, sample limits and ``*Probe.java`` files
 the diff adds are refused unless the ticket's definition of done names them: strip them, or
@@ -508,16 +521,26 @@ never stand in for the launch entry: every ticket needs one, so the user can see
 with F5, and it is run exactly as F5 runs it, only headless, so a crash on that path is
 caught here and never at the user's keyboard, and tmp/ must hold a screenshot.
 
+The ticket's ``perf-benchmarks`` (``generate_board.py update ID --add-perf-benchmark
+<Selector>``) are then timed against master exactly as ``ixd wt perf`` does: a diff touching
+any module's ``src/main`` with none named refuses, and so does a failing benchmark or a
+regression the definition of done does not accept with ``Accepts perf regression <Selector>:
+<reason>``. Master's side comes from the newest recorded baseline that still holds (a landed
+ticket's times, or an earlier fresh run, on this machine, with nothing the benchmark reaches
+changed since), and runs fresh only when none does.
+
 After the build, each module's Maven classes are copied over the IDE's ``target-ide/``
 output, which is what F5 actually runs: VS Code's Java extension may not have rebuilt after
 the agent's edits, and would otherwise launch stale classes without a word.
 
 positional arguments:
-  worktree_name  worktree path or bare name, defaulting to the one holding the
-                 current directory
+  worktree_name     worktree path or bare name, defaulting to the one holding
+                    the current directory
 
 options:
-  -h, --help     show this help message and exit
+  -h, --help        show this help message and exit
+  --fresh-baseline  run master's side of the benchmarks again, ignoring the
+                    recorded baselines
 ```
 ### ixd wt launch-add
 ```
@@ -569,6 +592,11 @@ rewrapped line reads as unchanged there. The
 brief that is printed is everything an agent needs to start: the paths, the ticket file, the
 verbs, and what is denied.
 
+When the ticket names papers (cite keys such as ``L03`` or ``LCK21a`` in its title, description,
+definition of done or ``cite-keys`` field, or an author and year such as "Liepa 2003"), the brief
+ends with every file, class and method whose comments or Javadoc cite each paper, and the
+section each cites, so the agent starts from what already implements the paper.
+
 With ``--base`` the worktree is stacked on another worktree's branch instead: it starts from that
 branch's tip, and `sync`, `commit` and `done` replay onto the base rather than the main branch,
 so its diff is only its own change. The base's change must be committed (`ixd wt commit`) for
@@ -585,6 +613,118 @@ options:
                         repository under REPO_HOME that gets the worktree
   --base BASE           stack on this worktree branch instead of the main
                         branch
+```
+### ixd wt perf
+```
+usage: ixd wt perf [-h] [--fresh-baseline] [--benchmark BENCHMARK]
+                   [worktree_name]
+
+Run the ticket's perf-benchmarks in the worktree, compare with master's baseline, refuse a regression.
+
+The same check ``wt done`` runs after the build and the named tests; this never marks or
+changes the ticket. The benchmarks are the ticket's ``perf-benchmarks`` (Maven ``-Dtest``
+selectors, set with ``generate_board.py update ID --add-perf-benchmark
+CrawfishMeshRepairBenchmark``). A diff that touches any module's ``src/main`` with none named
+refuses: add the benchmarks that cover the change.
+
+Each selector runs once in the worktree. Its baseline is the newest recorded one that still
+holds: ``ixd land`` records each landed ticket's measured times as master's, and each fresh
+baseline run is recorded too, in ``<ticket store>/perf/<repository>/<selector>.jsonl``. A
+record holds when it was taken on this machine, its commit is in master's history, and no file
+the benchmark reaches (the classes it imports, transitively, the poms, the resources it names)
+has changed on master since; then master is not run at all. Otherwise master runs twice on its
+current commit, in the detached baseline worktree ``.claude/worktrees/.perf-baseline`` that ixd
+creates and keeps on master (never the main checkout), cached per commit and selector under
+``~/.cache/ixd/perf-baseline/``, and that run is recorded. The output says which: the ticket and
+commit of the record, or ``fresh run <commit>``, with the reason a record did not hold.
+
+The baseline is the mean of master's two runs and the noise their spread (a record carries
+both); a worktree time above the baseline by more than the noise, or by two clock ticks
+(31.25 ms) when that is larger, is a regression. A benchmark that fails or errors fails the
+check; one master has no test for is ``new`` and not compared. The table (benchmark, baseline,
+worktree, change, noise, verdict, baseline source) is printed and saved to
+``tmp/<ticket>-perf.txt``, and as JSON to ``tmp/<ticket>-perf.json``, which ``land`` records.
+
+A regression refuses unless the definition of done accepts it with a line
+``Accepts perf regression <Selector>: <reason>``; failures are never accepted.
+
+positional arguments:
+  worktree_name         worktree path or bare name, defaulting to the one
+                        holding the current directory
+
+options:
+  -h, --help            show this help message and exit
+  --fresh-baseline      run master twice again, ignoring the records and the
+                        cache, and record that run
+  --benchmark BENCHMARK
+                        a selector to time instead of the ticket's perf-
+                        benchmarks (repeatable)
+```
+### ixd wt reset
+```
+usage: ixd wt reset [-h] worktree_name
+
+Snapshot the whole uncommitted change, then reset the worktree to the commit it sits on.
+
+For starting a ticket over from a clean tree without losing anything: the change, new files
+included, is saved as a snapshot first, and the reset only runs once that snapshot is
+confirmed to hold exactly the current files. Then tracked files go back to the branch's
+commit (master, for a worktree that has not committed) and untracked files are removed.
+Ignored files (``tmp/``, ``target/``) stay, so diagnostics and logs survive.
+``ixd wt restore <name> <n> <path>`` brings back any file or directory from the printed
+snapshot.
+
+Refuses when the branch has commits of its own (their work is not in the uncommitted change,
+and a reset would not take the tree to master) or when a sync is in progress.
+
+positional arguments:
+  worktree_name  worktree path or bare name
+
+options:
+  -h, --help     show this help message and exit
+```
+### ixd wt restore
+```
+usage: ixd wt restore [-h] worktree_name number path
+
+Copy a file or directory as it stood in snapshot ``<number>`` back into the worktree.
+
+The worktree is snapshotted first, so the restore itself can be undone the same way. Files
+the snapshot holds under ``<path>`` are written over their current versions; files that exist
+now but not in the snapshot are left alone. Nothing is staged or committed. ``ixd wt
+snapshots`` lists the numbers.
+
+positional arguments:
+  worktree_name  worktree path or bare name
+  number         the snapshot number, as ``ixd wt snapshots`` prints it
+  path           file or directory to bring back, relative to the worktree
+                 root
+
+options:
+  -h, --help     show this help message and exit
+```
+### ixd wt snapshots
+```
+usage: ixd wt snapshots [-h] [-f PATH] [-n LIMIT] [worktree_name]
+
+List a worktree's snapshots, newest first, with the files each one changed.
+
+The ``snapshot_edit`` hook saves the worktree's uncommitted state before every Edit, Write or
+Bash call that reaches into it, so code an agent wrote and later deleted is still here. Each
+line shows the snapshot's number, its time, the tool call that ran right after it, and the
+files that differ from the snapshot before. ``ixd wt restore <name> <n> <path>`` copies a file
+or directory back out of snapshot ``<n>``.
+
+positional arguments:
+  worktree_name         worktree path or bare name, defaulting to the one
+                        holding the current directory
+
+options:
+  -h, --help            show this help message and exit
+  -f PATH, --path PATH  show only the snapshots in which this file or
+                        directory changed (worktree-relative)
+  -n LIMIT, --limit LIMIT
+                        how many snapshots to show
 ```
 ### ixd wt stage-checkpoint
 ```
@@ -675,14 +815,16 @@ options:
 ```
 usage: ixd wt status [-h] [worktree_name]
 
-Show the branch, its refs, the changed files, added diagnostics, and the last agent note.
+Show the branch, its refs, the changed files, added diagnostics, cited papers, and the last agent note.
 
 This is what a relaunched agent reads instead of a hand-written brief. The note is the closing
 prose of the transcript whose tool calls actually worked in this worktree, so an agent picking
 the work up learns what was built and what was left. Refs are the published and archived
 copies of the branch (``origin/<branch>``, ``archive/<branch>``), so nobody reaches for the
 denied ``git branch`` or ``git tag`` to find them. Diagnostics are the log lines, counters and
-probes ``wt done`` refuses unless the ticket's definition of done names them.
+probes ``wt done`` refuses unless the ticket's definition of done names them. Papers are the
+files, classes and methods whose comments cite each paper the ticket names, with the section,
+the same list ``wt new`` puts in the brief.
 
 positional arguments:
   worktree_name  worktree path or bare name, defaulting to the one holding the

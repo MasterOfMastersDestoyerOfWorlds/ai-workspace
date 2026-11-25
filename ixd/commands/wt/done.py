@@ -5,7 +5,7 @@ import time
 import xml.etree.ElementTree as ElementTree
 from typing import Annotated
 
-from ... import diagnostics, worktree
+from ... import diagnostics, perf, worktree
 from ...registry import CliOption, cli_command
 
 VERIFY_TESTS = "verify-tests"
@@ -14,8 +14,9 @@ VERIFY_TESTS = "verify-tests"
 @cli_command
 def done(
     worktree_name: Annotated[str, CliOption(positional=True)] = "",
+    fresh_baseline: bool = False,
 ) -> int:
-    """Sync, refuse leftover diagnostics, build, run the named tests and the launch entry, check tmp/, mark REVIEW.
+    """Sync, refuse leftover diagnostics, build, run the named tests, time the benchmarks, run the launch entry, check tmp/, mark REVIEW.
 
     Log lines, public counters, describe/dump helpers, sample limits and ``*Probe.java`` files
     the diff adds are refused unless the ticket's definition of done names them: strip them, or
@@ -29,15 +30,27 @@ def done(
     with F5, and it is run exactly as F5 runs it, only headless, so a crash on that path is
     caught here and never at the user's keyboard, and tmp/ must hold a screenshot.
 
+    The ticket's ``perf-benchmarks`` (``generate_board.py update ID --add-perf-benchmark
+    <Selector>``) are then timed against master exactly as ``ixd wt perf`` does: a diff touching
+    any module's ``src/main`` with none named refuses, and so does a failing benchmark or a
+    regression the definition of done does not accept with ``Accepts perf regression <Selector>:
+    <reason>``. Master's side comes from the newest recorded baseline that still holds (a landed
+    ticket's times, or an earlier fresh run, on this machine, with nothing the benchmark reaches
+    changed since), and runs fresh only when none does.
+
     After the build, each module's Maven classes are copied over the IDE's ``target-ide/``
     output, which is what F5 actually runs: VS Code's Java extension may not have rebuilt after
     the agent's edits, and would otherwise launch stale classes without a word.
 
     :param worktree_name: worktree path or bare name, defaulting to the one holding the current directory
+    :param fresh_baseline: run master's side of the benchmarks again, ignoring the recorded baselines
     """
     path, branch, main_branch = worktree.resolve_worktree(worktree_name)
     tests = (worktree.ticket_for(branch) or {}).get(VERIFY_TESTS) or []
-    print(f"== done {branch}: sync, build, run the named tests and the launch entry, check tmp/, mark REVIEW")
+    print(
+        f"== done {branch}: sync, build, run the named tests, time the benchmarks, run the launch entry, "
+        f"check tmp/, mark REVIEW"
+    )
     worktree.sync(path, branch, main_branch)
     require_no_leftover_diagnostics(path, branch)
     build(path)
@@ -48,6 +61,7 @@ def done(
         )
     if tests:
         run_named_tests(path, tests)
+    perf.check(path, branch, fresh_baseline=fresh_baseline)
     entry = require_launch_entry(path, branch)
     print(f"== launch entry: {entry.get('name')} (scene {entry.get('args')})")
     shot = path / "tmp" / f"{branch}-launch.png"

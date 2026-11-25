@@ -27,6 +27,16 @@
             "timeout": 15
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --project \"${CLAUDE_PROJECT_DIR}\" python \"${CLAUDE_PROJECT_DIR}/hooks/snapshot_edit.py\"",
+            "timeout": 30
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
@@ -48,6 +58,11 @@
             "type": "command",
             "command": "uv run --project \"${CLAUDE_PROJECT_DIR}\" python \"${CLAUDE_PROJECT_DIR}/hooks/checkstyle_edit.py\"",
             "timeout": 180
+          },
+          {
+            "type": "command",
+            "command": "uv run --project \"${CLAUDE_PROJECT_DIR}\" python \"${CLAUDE_PROJECT_DIR}/hooks/structural_constant_edit.py\"",
+            "timeout": 15
           }
         ]
       }
@@ -149,6 +164,8 @@
       "Bash(git -* update-ref*)"
     ],
     "allow": [
+      "Edit(../Ixdar/.claude/worktrees/**)",
+      "Write(../Ixdar/.claude/worktrees/**)",
       "Bash(git worktree*)",
       "Bash(git -* worktree*)",
       "Bash(ixd wt *)",

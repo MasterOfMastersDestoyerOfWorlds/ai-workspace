@@ -1,6 +1,7 @@
 """Where an agent session's wall time went, read from its transcripts."""
 
 import collections
+import sys
 from typing import Annotated
 
 from ... import transcripts
@@ -26,6 +27,8 @@ def stats(
     :param top: rows to print per list
     :param idle: seconds of gap after a result that count as idle rather than activity
     """
+    # Transcripts quote tool output verbatim; a Windows console's cp1252 cannot print all of it.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     paths = transcripts.resolve(transcript, session, latest)
     if not paths:
         raise SystemExit("no transcripts given: name one, or pass --session or --latest")
@@ -35,11 +38,10 @@ def stats(
         totals.update(by_category)
         counts.update(per_category)
     if len(paths) > 1:
-        print("\n=== context per transcript (relaunch an agent past 200k):")
+        print("\n=== context per transcript:")
         for path in paths:
             latest, peak = transcripts.context_tokens(path)
-            flag = "  <- relaunch" if latest > 200_000 else ""
-            print(f"  {latest // 1000:5d}k now {peak // 1000:5d}k peak  {path.name}{flag}")
+            print(f"  {latest // 1000:5d}k now {peak // 1000:5d}k peak  {path.name}")
         print("\n=== all transcripts, wall time by activity:")
         for category, span in totals.most_common():
             print(f"  {span / 60:6.1f} min  {counts[category]:4d} calls  {category}")

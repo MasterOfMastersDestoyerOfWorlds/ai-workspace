@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from ... import diagnostics, worktree
+from ... import citations, diagnostics, worktree
 from ...registry import CliOption, cli_command
 
 CHANGED_FILE_LINES = 40
@@ -10,14 +10,16 @@ CHANGED_FILE_LINES = 40
 
 @cli_command
 def status(worktree_name: Annotated[str, CliOption(positional=True)] = "") -> int:
-    """Show the branch, its refs, the changed files, added diagnostics, and the last agent note.
+    """Show the branch, its refs, the changed files, added diagnostics, cited papers, and the last agent note.
 
     This is what a relaunched agent reads instead of a hand-written brief. The note is the closing
     prose of the transcript whose tool calls actually worked in this worktree, so an agent picking
     the work up learns what was built and what was left. Refs are the published and archived
     copies of the branch (``origin/<branch>``, ``archive/<branch>``), so nobody reaches for the
     denied ``git branch`` or ``git tag`` to find them. Diagnostics are the log lines, counters and
-    probes ``wt done`` refuses unless the ticket's definition of done names them.
+    probes ``wt done`` refuses unless the ticket's definition of done names them. Papers are the
+    files, classes and methods whose comments cite each paper the ticket names, with the section,
+    the same list ``wt new`` puts in the brief.
 
     :param worktree_name: worktree path or bare name, defaulting to the one holding the current directory
     """
@@ -47,6 +49,8 @@ def status(worktree_name: Annotated[str, CliOption(positional=True)] = "") -> in
         print(f"diagnostics: {len(left)} added and not named in the DoD (wt done refuses them)")
         for finding in left[:CHANGED_FILE_LINES]:
             print(f"  {finding.describe()}")
+    for line in citations.report_lines(path, ticket):
+        print(line)
     if ahead or behind:
         print("run `ixd wt sync` to put the whole change on top of the current main branch")
     worktree.print_resume_note(path)

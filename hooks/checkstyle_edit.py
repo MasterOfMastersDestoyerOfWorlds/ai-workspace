@@ -11,7 +11,7 @@ out of the autofix-tool artifact, exactly as maven-checkstyle-plugin reads it. T
 classpath is cached under ~/.cache, so only the first edit of a session pays maven.
 
 A second pass runs two checks the build leaves off because the codebase holds many old
-violations: SingleCallerHelperCheck (a private method with one caller should be inlined there)
+violations: SingleCallerHelperCheck (a private method with one or two callers should be inlined there)
 and MethodVisibilityCheck (a method is public or private, never protected or package-private,
 which is how a helper used to dodge the single-caller check). Here the pass is incremental: only a
 method declared on a line the file's uncommitted diff adds is reported, so new code is caught when
@@ -40,10 +40,22 @@ a block opened after a class, interface, enum or record keyword is a type body.
 
 SingleCallerHelperCheck sees one file and so only private methods; on 2026-10-06 two agents made a
 one-caller helper public so a test could call it. A third pass covers that: every public method a
-main source adds is looked up across the checkout's src/main/java trees by name, and one with one
-call site or none there is reported. Test sources are not searched, so test calls never count.
+main source adds is looked up across the checkout's src/main/java trees by name, and one with two
+call sites or fewer there, all in its own file, is reported. Test sources are not searched, so test calls never count.
 The lookup is by name, so an overload or a same-named method elsewhere can hide a real single
 caller; methods carrying an annotation (@Override and the framework hooks) are skipped.
+
+Two more catch code written somewhere other than where its concept lives (TOOL-63), both on main
+sources only. FeatureEnvyCheck, in the checkstyle pass, reports an added method that uses none of
+its class's instance state and mostly another type it takes as a parameter ("lastOfKind() mostly
+uses GraphNodeContext: move it there"). method_index.py reports an added method that may already
+exist in the module: the same normalised body, the same signature and name words, or a method
+named like it on one of its parameter types ("ringCentroid: did you mean PackedPoints.ringMean,
+its int[][] from MeshTopology.oneRings()?"). It also reports a block the change adds, in a main or
+a test source, that repeats one in the same file, the change or the module, gapped copies
+included ("this block (lines a-b) repeats PolygonScan.convexHull lines c-d [DuplicateBlock]").
+Its index is cached under ~/.cache, so only the first edit in a module pays the full read. Package boundaries are not checked here: they are ArchUnit
+tests in Ixdar's unit suite.
 """
 
 import os
@@ -60,6 +72,7 @@ sys.path.insert(1, os.path.dirname(HOOKS_DIR))
 
 from hook_common import block, read_event  # noqa: E402
 from ixd.paths import repo_path  # noqa: E402
+from method_index import added_block_reports, added_method_reports  # noqa: E402
 
 CACHE_DIR = os.path.join(
     os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
@@ -85,6 +98,9 @@ VIOLATION_LINE = re.compile(r"^\[(?:ERROR|WARN)\]\s*(?P<body>.*)$")
 
 INCREMENTAL_CONFIGURATION = os.path.join(CACHE_DIR, "incremental-checkstyle.xml")
 
+# A helper with this many call sites or fewer is reported, matching SingleCallerHelperCheck.
+MOST_CALLERS_FLAGGED = 2
+
 INCREMENTAL_CONFIGURATION_TEXT = """<?xml version="1.0"?>
 <!DOCTYPE module PUBLIC "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN"
     "https://checkstyle.org/dtds/configuration_1_3.dtd">
@@ -92,6 +108,7 @@ INCREMENTAL_CONFIGURATION_TEXT = """<?xml version="1.0"?>
   <module name="TreeWalker">
     <module name="ixdar.autofix.checkstyle.SingleCallerHelperCheck"/>
     <module name="ixdar.autofix.checkstyle.MethodVisibilityCheck"/>
+    <module name="ixdar.autofix.checkstyle.FeatureEnvyCheck"/>
     <module name="MethodLength">
       <property name="max" value="150"/>
       <property name="tokens" value="METHOD_DEF,CTOR_DEF"/>
@@ -123,6 +140,8 @@ METHOD_LENGTH_SPAN = re.compile(r"Method is (?P<length>\d+) lines")
 VIOLATION_POSITION = re.compile(r"^[^:]+:(?P<line>\d+):")
 
 METHOD_VISIBILITY_TAG = "[MethodVisibility]"
+
+FEATURE_ENVY_TAG = "[FeatureEnvy]"
 
 MAIN_SOURCE_SEGMENT = os.path.join("src", "main", "java") + os.sep
 
@@ -451,7 +470,7 @@ def new_method_violations(classpath, path):
         lines = range(start, start + int(span.group("length"))) if span else (start,)
         if added is not None and not any(number in added for number in lines):
             continue
-        if not main_source and line.endswith(METHOD_VISIBILITY_TAG):
+        if not main_source and line.endswith((METHOD_VISIBILITY_TAG, FEATURE_ENVY_TAG)):
             continue
         reports.append(line)
     return reports
@@ -520,14 +539,24 @@ def public_single_caller_violations(root, path):
                 own_calls += count
             else:
                 other_calls += count
-        if other_calls == 0 and own_calls <= 1:
-            where = "one call site, in its own file" if own_calls == 1 else "no call site"
+        if other_calls == 0 and own_calls <= MOST_CALLERS_FLAGGED:
+            where = f"{own_calls} call site(s), in its own file" if own_calls else "no call site"
             reports.append(
                 f"{os.path.basename(path)}:{number}: public '{name}()' has {where}, in main "
                 f"sources (tests do not count): inline it at its caller, or delete it; a test is "
                 f"no reason to make a helper public. [PublicSingleCaller]"
             )
     return reports
+
+
+def duplicate_helper_violations(path):
+    """Returns the "did you mean" reports for main-source methods this change adds, and the
+    DuplicateBlock reports for blocks it adds to a main or test source."""
+    added = added_lines(path)
+    blocks = added_block_reports(path, added)
+    if MAIN_SOURCE_SEGMENT not in os.path.abspath(path):
+        return blocks
+    return added_method_reports(path, added) + blocks
 
 
 def comment_violations(path):
@@ -631,6 +660,7 @@ def main():
             new_method_violations(classpath, path)
             + public_single_caller_violations(root, path)
             + comment_violations(path)
+            + duplicate_helper_violations(path)
         )
     except ClasspathUnavailable as error:
         if already_warned(event):

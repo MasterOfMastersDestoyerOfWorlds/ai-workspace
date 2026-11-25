@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import Annotated, Literal
 
-from ... import editor, events, worktree
+from ... import editor, events, perf_records, worktree
 from ...registry import CliOption, cli_command
 
 TICKET_REPO = worktree.TICKET_REPO
@@ -37,7 +37,11 @@ def land(
     Six steps, each refusing to continue on failure. Replay the change onto the current main branch.
     Remove every .vscode/launch.json entry named after a ticket (``PATCH-117: quad-layout``), the
     F5 verification aids ``wt launch-add`` writes, while other launch.json changes, such as a new
-    scene's entry, land. Squash the diff into one commit. Fast-forward the main checkout. Remove
+    scene's entry, land. Squash the diff into one commit. Fast-forward the main checkout, then
+    record the benchmark times the worktree's last ``wt perf`` or ``wt done`` measured
+    (``tmp/<branch>-perf.json``) as master's baseline in ``<ticket store>/perf/``, per selector its
+    mean, noise, runs, machine, date and the landed commit, skipping a benchmark whose reached code
+    differs from what was measured; ``wt perf`` then reuses it instead of running master. Remove
     the worktree and its branch. Mark the branch's ticket DONE, which happens after the removal so
     the ticket CLI's unmerged-worktree guard sees the landed state.
 
@@ -141,6 +145,7 @@ def land(
                 f"{merge.stderr.strip()}"
             )
         print(f"{main_branch} is now at {worktree.git(main_checkout, 'rev-parse', '--short', 'HEAD')}")
+        record_perf(path, branch)
     else:
         require_already_merged(main_checkout, branch, main_branch)
 
@@ -176,6 +181,18 @@ def land(
             worktree.remove_leftovers(path)
     print("done")
     return 0
+
+
+def record_perf(path, branch):
+    """Record the landed ticket's measured benchmark times as master's baseline; only warns.
+
+    :param path: the worktree, whose ``tmp/<branch>-perf.json`` holds its last perf check
+    :param branch: its branch, now landed
+    """
+    try:
+        perf_records.record_landing(path, branch, worktree.git(path, "rev-parse", "HEAD"))
+    except (Exception, SystemExit) as problem:  # the merge is done; a missed record only costs a rerun
+        print(f"== perf record: failed ({problem}); the next wt perf runs master fresh")
 
 
 def unstack(path, branch):
@@ -423,7 +440,9 @@ def rebuild_main_checkout(main_checkout):
     # worktree shares at one version.
     command = ["mvn", "-q", "compile"]
     print(f"== rebuild {main_checkout} ({' '.join(command)})")
-    result = subprocess.run(worktree.resolved(command), cwd=str(main_checkout), capture_output=True, text=True)
+    result = subprocess.run(
+        worktree.resolved(command), cwd=str(main_checkout), capture_output=True, text=True
+    )
     if result.returncode != 0:
         raise SystemExit(
             "rebuild failed (the merge itself is done):\n" + (result.stderr or result.stdout).strip()[-3000:]
